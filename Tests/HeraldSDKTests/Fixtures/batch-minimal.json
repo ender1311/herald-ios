@@ -1,0 +1,39 @@
+{
+  "sdk": {
+    "name": "herald-android",
+    "version": "0.1.0"
+  },
+  "deviceId": "7d2e3b0f-4c5e-4f60-9b8c-0d1e2f3a4b5c",
+  "userId": null,
+  "sentAt": "2026-11-09T14:00:00.000Z",
+  "dropped": 3,
+  "context": {
+    "app": {
+      "name": "Lumen",
+      "version": "4.2.0",
+      "build": "812",
+      "namespace": "com.lumen.app"
+    },
+    "os": {
+      "name": "Android",
+      "version": "15"
+    },
+    "region": "US"
+  },
+  "events": [
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000001",
+      "type": "session_start",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000"
+    },
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000002",
+      "type": "track",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000",
+      "name": "app_opened",
+      "properties": {}
+    }
+  ]
+}

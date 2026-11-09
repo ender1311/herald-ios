@@ -1,0 +1,375 @@
+import Foundation
+import os
+#if canImport(UIKit)
+import UIKit
+#endif
+#if os(iOS)
+import UserNotifications
+#endif
+
+/// The SDK entry point. Call `Herald.configure` once at launch, then use `Herald.shared`.
+///
+/// Every call is safe from any thread, returns immediately and is applied in call order.
+/// Calls made before `configure` are kept and applied once it runs. The SDK never throws into
+/// the host app: invalid input is logged and skipped.
+public final class Herald: Sendable {
+    public static let shared = Herald()
+    public static let sdkVersion = "0.1.0"
+
+    /// The current user's content cards.
+    public let contentCards: ContentCardStore
+
+    typealias Command = @Sendable (isolated HeraldCore) async -> Void
+
+    private let bridge: MainActorBridge
+    private let commands: AsyncStream<Command>.Continuation
+    private let stream: AsyncStream<Command>
+    private let configured = OSAllocatedUnfairLock(initialState: false)
+
+    init() {
+        contentCards = ContentCardStore()
+        bridge = MainActorBridge(store: contentCards)
+        (stream, commands) = AsyncStream.makeStream(of: Command.self, bufferingPolicy: .bufferingOldest(10_000))
+    }
+
+    // MARK: - Setup
+
+    public static func configure(_ configuration: HeraldConfiguration) {
+        shared.start(configuration)
+    }
+
+    /// `Herald.configure(appKey: "pk_…", endpoint: url) { $0.deviceDataCollection = .minimal }`
+    public static func configure(
+        appKey: String, endpoint: URL, options: (inout HeraldConfiguration) -> Void = { _ in }
+    ) {
+        var configuration = HeraldConfiguration(appKey: appKey, endpoint: endpoint)
+        options(&configuration)
+        configure(configuration)
+    }
+
+    func start(
+        _ configuration: HeraldConfiguration,
+        storage: @escaping @Sendable () -> Storage = { Storage(directory: Storage.defaultDirectory()) },
+        transport: HeraldTransport = URLSessionTransport(),
+        deviceInfo: DeviceInfoProvider = SystemDeviceInfoProvider()
+    ) {
+        let first = configured.withLock { done in
+            defer { done = true }
+            return !done
+        }
+        guard first else {
+            Log.warning("Herald.configure was called more than once; ignoring the later call")
+            return
+        }
+        Log.level = configuration.logLevel
+        let bridge = bridge
+        let stream = stream
+        Task.detached(priority: .utility) {
+            let core = HeraldCore(
+                configuration: configuration, storage: storage(), transport: transport, deviceInfo: deviceInfo,
+                output: bridge
+            )
+            await core.start()
+            for await command in stream {
+                await command(core)
+            }
+        }
+        #if canImport(UIKit) && !os(watchOS)
+        Task { @MainActor in LifecycleObserver.install(self) }
+        #else
+        send { core in core.appDidBecomeActive() }
+        #endif
+    }
+
+    func send(_ command: @escaping Command) {
+        commands.yield(command)
+    }
+
+    // MARK: - Identity
+
+    /// Identifies the user. A different user id than the current one ends the session and clears the
+    /// previous user's token, cards and messages. Call `setUserToken` after `identify`.
+    public func identify(userId: String, traits: [String: HeraldValue] = [:]) {
+        send { core in core.identify(userId: userId, traits: traits) }
+    }
+
+    /// Identity verification token for the current user: hex HMAC-SHA256 of the user id, minted by
+    /// your server. Pass nil to clear it.
+    public func setUserToken(_ token: String?) {
+        send { core in core.setUserToken(token) }
+    }
+
+    /// Logs the user out: anonymous again on this device, with a new session. Clears the user id,
+    /// token, cards, in-app messages and that user's in-app history.
+    public func reset() {
+        send { core in core.reset() }
+    }
+
+    // MARK: - Events and attributes
+
+    public func track(_ event: String, properties: [String: HeraldValue] = [:]) {
+        send { core in core.track(event, properties: properties) }
+    }
+
+    public func screen(_ name: String, properties: [String: HeraldValue] = [:]) {
+        send { core in core.screen(name, properties: properties) }
+    }
+
+    /// `currency` is an ISO 4217 code such as "USD".
+    public func trackPurchase(
+        productId: String, price: Double, currency: String, quantity: Int = 1,
+        properties: [String: HeraldValue] = [:]
+    ) {
+        send { core in
+            core.trackPurchase(productId: productId, price: price, currency: currency, quantity: quantity, properties: properties)
+        }
+    }
+
+    /// Values may be string, number, bool, nil or an array of strings. Keys starting with `$` are reserved.
+    public func setAttribute(_ key: String, _ value: HeraldValue) {
+        setAttributes([key: value])
+    }
+
+    public func setAttributes(_ attributes: [String: HeraldValue]) {
+        send { core in core.setAttributes(attributes) }
+    }
+
+    public func setEmail(_ email: String) {
+        setAttributes(["$email": .string(email)])
+    }
+
+    /// E.164 format, for example "+15551234567".
+    public func setPhone(_ phone: String) {
+        setAttributes(["$phone": .string(phone)])
+    }
+
+    public func setSubscription(_ channel: SubscriptionChannel, _ state: SubscriptionState) {
+        send { core in core.setSubscription(channel, state) }
+    }
+
+    /// Stores a location the app obtained itself. The SDK never reads location on its own.
+    public func setLocation(latitude: Double, longitude: Double) {
+        guard (-90...90).contains(latitude), (-180...180).contains(longitude) else {
+            Log.error("setLocation: latitude must be -90...90 and longitude -180...180")
+            return
+        }
+        setAttributes(["$latitude": .number(latitude), "$longitude": .number(longitude)])
+    }
+
+    // MARK: - Data control
+
+    /// Sends queued events now (subject to any server-requested retry delay).
+    public func flush() {
+        send { core in core.scheduleFlush() }
+    }
+
+    /// Turns all collection, sending and message display on or off. Persisted across launches.
+    public func setEnabled(_ enabled: Bool) {
+        send { core in core.setEnabled(enabled) }
+    }
+
+    /// Deletes all SDK data on this device and disables the SDK. Call `setEnabled(true)` to start
+    /// again with a new device id.
+    public func wipeData() {
+        send { core in core.wipeData() }
+    }
+
+    // MARK: - Push
+
+    /// Asks for notification permission and, when granted, registers with APNs. Records the push
+    /// subscription state. Returns false on platforms without push.
+    public func requestPushAuthorization() async -> Bool {
+        #if os(iOS)
+        let granted: Bool
+        do {
+            granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+        } catch {
+            Log.error("Push authorization failed: \(error.localizedDescription)")
+            granted = false
+        }
+        if granted {
+            await MainActor.run { UIApplication.shared.registerForRemoteNotifications() }
+        }
+        setSubscription(.push, granted ? .optedIn : .unsubscribed)
+        return granted
+        #else
+        return false
+        #endif
+    }
+
+    /// Forward the token from `application(_:didRegisterForRemoteNotificationsWithDeviceToken:)`.
+    public func setPushToken(_ token: Data) {
+        let hex = PushToken.hex(token)
+        guard !hex.isEmpty else { return }
+        send { core in core.setPushToken(hex: hex) }
+    }
+
+    #if os(iOS)
+    /// Forward from `userNotificationCenter(_:didReceive:withCompletionHandler:)`. Logs the open,
+    /// button or dismissal, evaluates `push_open` in-app triggers and opens the push's deep link.
+    /// Returns false when the notification did not come from Herald.
+    @MainActor @discardableResult
+    public func handleNotificationResponse(_ response: UNNotificationResponse) -> Bool {
+        guard let payload = HeraldPushPayload(userInfo: response.notification.request.content.userInfo) else {
+            return false
+        }
+        let action: String
+        let buttonId: String?
+        switch response.actionIdentifier {
+        case UNNotificationDefaultActionIdentifier:
+            action = "open"
+            buttonId = nil
+        case UNNotificationDismissActionIdentifier:
+            action = "dismiss"
+            buttonId = nil
+        default:
+            action = "button"
+            buttonId = response.actionIdentifier
+        }
+        let decisionId = payload.decisionId
+        send { core in core.pushResponse(messageId: decisionId, decisionId: decisionId, action: action, buttonId: buttonId) }
+        if action != "dismiss", let url = payload.deeplink {
+            openDeepLink(url)
+        }
+        return true
+    }
+    #endif
+
+    // MARK: - Content cards
+
+    /// Fetches the latest cards and in-app messages now.
+    public func refreshContentCards() {
+        send { core in await core.syncMessages() }
+    }
+
+    public func logImpression(_ card: ContentCard) {
+        send { core in core.logCardImpression(card) }
+    }
+
+    public func logClick(_ card: ContentCard) {
+        send { core in core.logCardClick(card) }
+    }
+
+    /// Hides the card on this device and tells Herald.
+    public func logDismissal(_ card: ContentCard) {
+        send { core in core.logCardDismissal(card) }
+    }
+
+    // MARK: - In-app messages
+
+    /// Decides whether each triggered message shows now, later or never. Held weakly.
+    @MainActor public var inAppMessageDelegate: InAppMessageDelegate? {
+        get { bridge.delegate }
+        set { bridge.delegate = newValue }
+    }
+
+    /// Draws in-app messages. `HeraldUI` sets its default presenter; messages are not shown while nil.
+    @MainActor public var inAppMessagePresenter: InAppMessagePresenter? {
+        get { bridge.presenter }
+        set { bridge.presenter = newValue }
+    }
+
+    /// Opens Herald deep links (push, card and message clicks). Return true when handled; when nil
+    /// or returning false, the SDK opens the URL with the system.
+    @MainActor public var deepLinkHandler: ((URL) -> Bool)? {
+        get { bridge.deepLinkHandler }
+        set { bridge.deepLinkHandler = newValue }
+    }
+
+    /// Shows the next message the delegate deferred with `.later`.
+    public func showNext() {
+        send { core in core.showNext() }
+    }
+
+    /// Only for custom displays: the SDK already logs the impression when it hands a message to the presenter.
+    public func logImpression(_ message: InAppMessage) {
+        send { core in core.logMessageImpression(message) }
+    }
+
+    /// A tap on the message body (`buttonId` nil) or on one of its buttons.
+    public func logClick(_ message: InAppMessage, buttonId: String? = nil) {
+        send { core in core.logMessageClick(message, buttonId: buttonId) }
+    }
+
+    public func logDismissal(_ message: InAppMessage) {
+        send { core in core.logMessageDismissal(message) }
+    }
+
+    /// Routes a URL through `deepLinkHandler`, falling back to the system.
+    @MainActor public func openDeepLink(_ url: URL) {
+        if bridge.deepLinkHandler?(url) == true { return }
+        #if canImport(UIKit) && !os(watchOS)
+        UIApplication.shared.open(url)
+        #endif
+    }
+}
+
+/// Main-actor side of the core: publishes cards and asks the delegate and presenter.
+@MainActor
+final class MainActorBridge: CoreOutput {
+    weak var delegate: InAppMessageDelegate?
+    var presenter: InAppMessagePresenter?
+    var deepLinkHandler: ((URL) -> Bool)?
+    private let store: ContentCardStore
+
+    nonisolated init(store: ContentCardStore) {
+        self.store = store
+    }
+
+    func cardsChanged(_ cards: [ContentCard]) {
+        store.update(cards)
+    }
+
+    func offer(_ message: InAppMessage, onClose: @escaping @MainActor @Sendable () -> Void) -> InAppMessageDisplayChoice? {
+        guard let presenter else { return nil }
+        let choice = delegate?.shouldDisplay(message) ?? .display
+        if choice == .display {
+            presenter.present(message, onClose: onClose)
+        }
+        return choice
+    }
+}
+
+#if canImport(UIKit) && !os(watchOS)
+/// Forwards app foreground/background to the core and keeps the app alive for the background flush.
+@MainActor
+enum LifecycleObserver {
+    private static var tokens: [NSObjectProtocol] = []
+
+    static func install(_ herald: Herald) {
+        let center = NotificationCenter.default
+        tokens.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            herald.send { core in core.appDidBecomeActive() }
+        })
+        tokens.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                let task = BackgroundTask()
+                herald.send { core in
+                    await core.appDidEnterBackground()
+                    await task.end()
+                }
+            }
+        })
+        if UIApplication.shared.applicationState == .active {
+            herald.send { core in core.appDidBecomeActive() }
+        }
+    }
+}
+
+@MainActor
+final class BackgroundTask {
+    private var id: UIBackgroundTaskIdentifier = .invalid
+
+    init() {
+        id = UIApplication.shared.beginBackgroundTask(withName: "Herald flush") { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
+    }
+}
+#endif

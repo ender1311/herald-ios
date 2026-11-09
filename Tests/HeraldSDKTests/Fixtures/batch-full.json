@@ -1,0 +1,140 @@
+{
+  "sdk": {
+    "name": "herald-ios",
+    "version": "0.1.0"
+  },
+  "deviceId": "6c1f2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+  "userId": "u_123",
+  "sentAt": "2026-11-09T14:00:00.000Z",
+  "dropped": 0,
+  "context": {
+    "app": {
+      "name": "Lumen",
+      "version": "4.2.0",
+      "build": "812",
+      "namespace": "com.lumen.app"
+    },
+    "os": {
+      "name": "iOS",
+      "version": "18.1"
+    },
+    "device": {
+      "manufacturer": "Apple",
+      "model": "iPhone16,1",
+      "type": "phone"
+    },
+    "screen": {
+      "width": 393,
+      "height": 852,
+      "density": 3
+    },
+    "locale": "en-US",
+    "language": "en",
+    "region": "US",
+    "timezone": "America/Chicago",
+    "network": {
+      "type": "wifi"
+    },
+    "push": {
+      "authorization": "authorized"
+    }
+  },
+  "events": [
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000001",
+      "type": "session_start",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000"
+    },
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000002",
+      "type": "identify",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000",
+      "userId": "u_123",
+      "traits": {
+        "plan": "free"
+      }
+    },
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000003",
+      "type": "track",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000",
+      "name": "workout_completed",
+      "properties": {
+        "minutes": 32
+      }
+    },
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000004",
+      "type": "screen",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000",
+      "name": "Home",
+      "properties": {}
+    },
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000005",
+      "type": "purchase",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000",
+      "productId": "plus_annual",
+      "price": 59.99,
+      "currency": "USD",
+      "quantity": 1,
+      "properties": {}
+    },
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000006",
+      "type": "attributes",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000",
+      "attributes": {
+        "favorite_workout": "strength",
+        "workouts_30d": 14,
+        "beta_tester": true,
+        "goals": [
+          "strength",
+          "mobility"
+        ],
+        "$email": "maya@example.com"
+      }
+    },
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000007",
+      "type": "subscription",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000",
+      "channel": "push",
+      "state": "opted_in"
+    },
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000008",
+      "type": "push_token",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000",
+      "platform": "apns",
+      "token": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "environment": "production",
+      "bundleId": "com.lumen.app"
+    },
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000009",
+      "type": "interaction",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000",
+      "messageId": "msg_1",
+      "kind": "content_card",
+      "action": "click",
+      "decisionId": "dec_1"
+    },
+    {
+      "id": "0b8f3c2e-0000-4000-8000-000000000010",
+      "type": "session_end",
+      "timestamp": "2026-11-09T14:00:00.000Z",
+      "sessionId": "1762696800000",
+      "durationSeconds": 412
+    }
+  ]
+}

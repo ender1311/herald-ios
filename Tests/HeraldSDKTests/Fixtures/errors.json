@@ -1,0 +1,18 @@
+{
+  "400": {
+    "error": "events[2].name: Required"
+  },
+  "401": {
+    "error": "Invalid app key"
+  },
+  "401_token": {
+    "error": "Invalid user token"
+  },
+  "413": {
+    "error": "Batch exceeds 100 events"
+  },
+  "429": {
+    "error": "Rate limited",
+    "retryAfterSeconds": 30
+  }
+}
