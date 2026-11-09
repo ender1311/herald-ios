@@ -4,9 +4,10 @@ import WebKit
 
 /// The web view behind `HTMLMessageView`. JavaScript is on for this view only, with a `herald` object:
 /// `herald.close()` dismisses and `herald.click(id)` logs a button click. The page is loaded with no
-/// base URL, so it cannot read files; it gets a non-persistent data store. Any link the page opens is
+/// base URL, so it cannot read files; it gets a non-persistent data store. A link the user taps is
 /// logged as a click and handed to `Herald.shared.openDeepLink` (the app or the system opens it,
-/// outside the message), and the message closes.
+/// outside the message), and the message closes. Other navigations (redirects, scripts) are blocked.
+/// If the page fails to load or its web process ends, the message is dismissed.
 struct HTMLMessageWebView: UIViewRepresentable {
     let html: String
     let background: Color
@@ -69,13 +70,17 @@ struct HTMLMessageWebView: UIViewRepresentable {
             self.actions = actions
         }
 
+        /// Same limit the SDK applies to button ids.
+        static let maxButtonIdLength = 200
+        private var loaded = false
+
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any] else { return }
             switch body["action"] as? String {
             case "close":
                 actions.dismiss()
             case "click":
-                if let id = body["id"] as? String { actions.clicked(buttonId: id) }
+                if let id = body["id"] as? String, id.utf16.count <= Self.maxButtonIdLength { actions.clicked(buttonId: id) }
             default:
                 break
             }
@@ -86,25 +91,43 @@ struct HTMLMessageWebView: UIViewRepresentable {
             decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
         ) {
             guard let url = navigationAction.request.url else { return decisionHandler(.cancel) }
-            // The initial loadHTMLString document.
-            if url.absoluteString == "about:blank", navigationAction.navigationType == .other {
+            // The initial loadHTMLString document, before it has loaded.
+            if !loaded, url.absoluteString == "about:blank", navigationAction.navigationType == .other {
                 return decisionHandler(.allow)
             }
             decisionHandler(.cancel)
-            if Self.opensOutside(url), navigationAction.navigationType == .linkActivated || navigationAction.targetFrame?.isMainFrame != false {
+            // Only a tap on a link counts as a click; redirects and script navigations are dropped.
+            if navigationAction.navigationType == .linkActivated, Self.opensOutside(url) {
                 actions.bodyClicked(url: url)
             }
         }
 
-        /// target="_blank" and window.open: same as a link.
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            loaded = true
+        }
+
+        /// target="_blank" and window.open: only a link tap opens anything.
         func webView(
             _ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
             for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            if let url = navigationAction.request.url, Self.opensOutside(url) {
+            if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url, Self.opensOutside(url) {
                 actions.bodyClicked(url: url)
             }
             return nil
+        }
+
+        // A blank or crashed page must never trap the user behind the overlay.
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            actions.dismiss()
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            actions.dismiss()
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            actions.dismiss()
         }
 
         /// Never hand file, javascript, data or about URLs to the app.

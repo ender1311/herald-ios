@@ -33,6 +33,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.herald.sample.lumen
         INFOPLIST_FILE: LumenSample/Info.plist
+        CODE_SIGN_ENTITLEMENTS: LumenSample/LumenSample.entitlements
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
   LumenNotificationService:

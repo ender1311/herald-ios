@@ -1,14 +1,15 @@
 import Foundation
 import UserNotifications
 
-/// Rich push for a Notification Service Extension: attaches the image a Herald push carries and adds
-/// its action buttons.
+/// Rich push for a Notification Service Extension: adds the action buttons and attaches the image a
+/// Herald push carries.
 ///
 /// Herald's APNs payload (`src/lib/esp/providers/apns.ts`) sets `aps.mutable-content: 1` and an
-/// `image_url` key when the push has an image. Optional `herald_actions` (up to 3 buttons,
-/// `[{"id","title","deeplink"?}]`, the same key the Android SDK reads) become a notification category
-/// registered on the fly, unless the payload already names one in `aps.category`. This module depends on Foundation and UserNotifications
-/// only, so it links into an app extension (HeraldSDK does not: it uses `UIApplication`).
+/// `image_url` key when the push has an image (`image` is read too, as on Android). Optional
+/// `herald_actions` (up to 3 buttons, `[{"id","title","deeplink"?}]`, the same key the Android SDK
+/// reads) become a notification category registered on the fly, unless the payload already names one
+/// in `aps.category`. This module depends on Foundation and UserNotifications only, so it links into an
+/// app extension (HeraldSDK does not: it uses `UIApplication`).
 ///
 /// Subclass it as the extension's principal class:
 /// ```swift
@@ -21,7 +22,8 @@ open class HeraldNotificationService: UNNotificationServiceExtension, @unchecked
     open var imageTimeout: TimeInterval { HeraldRichPush.defaultTimeout }
 
     private var contentHandler: ((UNNotificationContent) -> Void)?
-    private var original: UNNotificationContent?
+    /// The best content so far: the original, then with its action buttons. Delivered on expiry.
+    private var best: UNNotificationContent?
     private let lock = NSLock()
 
     override open func didReceive(
@@ -29,19 +31,21 @@ open class HeraldNotificationService: UNNotificationServiceExtension, @unchecked
     ) {
         lock.withLock {
             self.contentHandler = contentHandler
-            original = request.content
+            best = request.content
         }
         // UNNotificationContent is immutable but not marked Sendable.
         nonisolated(unsafe) let content = request.content
         let timeout = imageTimeout
         Task {
-            let result = await HeraldRichPush.prepare(content, timeout: timeout)
+            nonisolated(unsafe) let withActions = await HeraldRichPush.applyActions(to: content)
+            self.lock.withLock { self.best = withActions }
+            let result = await HeraldRichPush.attachImage(to: withActions, timeout: timeout)
             self.deliver(result)
         }
     }
 
     override open func serviceExtensionTimeWillExpire() {
-        lock.withLock { original }.map(deliver)
+        lock.withLock { best }.map(deliver)
     }
 
     /// Calls the content handler once; later calls do nothing.
@@ -55,8 +59,8 @@ open class HeraldNotificationService: UNNotificationServiceExtension, @unchecked
 }
 
 public enum HeraldRichPush {
-    /// The payload key Herald's APNs sender puts the image URL in.
-    public static let imageKey = "image_url"
+    /// Payload keys for the image URL, in the order they are read. Herald's APNs sender uses `image_url`.
+    public static let imageKeys = ["image_url", "image"]
     /// Under the system's roughly 30 s limit for a service extension.
     public static let defaultTimeout: TimeInterval = 20
     /// Larger downloads are skipped (the system limit for an image attachment is 10 MB).
@@ -65,37 +69,58 @@ public enum HeraldRichPush {
     /// The payload key with up to 3 action buttons.
     public static let actionsKey = "herald_actions"
     public static let maxActions = 3
+    static let categoryPrefix = "herald.actions."
+    /// How many `herald.actions.*` categories to keep registered (newest first).
+    static let maxActionCategories = 10
 
     /// Adds the push's action buttons, then its image. Returns `content` unchanged when it has neither.
     public static func prepare(
         _ content: UNNotificationContent, timeout: TimeInterval = defaultTimeout, session: URLSession = .shared
     ) async -> UNNotificationContent {
-        var result = content
-        if let category = actionCategory(for: content), let mutable = content.mutableCopy() as? UNMutableNotificationContent {
-            let center = UNUserNotificationCenter.current()
-            let existing = await center.notificationCategories()
-            if !existing.contains(where: { $0.identifier == category.identifier }) {
-                center.setNotificationCategories(existing.union([category]))
-                // Read back so the registration has landed before the notification is shown.
-                _ = await center.notificationCategories()
-            }
-            mutable.categoryIdentifier = category.identifier
-            result = mutable
-        }
-        return await attachImage(to: result, timeout: timeout, session: session)
+        await attachImage(to: await applyActions(to: content), timeout: timeout, session: session)
     }
 
-    /// A category for the payload's `herald_actions`; nil when there are none or `aps.category` is set.
-    /// The identifier is derived from the buttons, so identical button sets share one category.
-    static func actionCategory(for content: UNNotificationContent) -> UNNotificationCategory? {
-        guard content.categoryIdentifier.isEmpty else { return nil }
+    /// Registers a category for the push's `herald_actions` and sets it on the content. Unchanged when
+    /// there are no actions or `aps.category` is already set.
+    public static func applyActions(to content: UNNotificationContent) async -> UNNotificationContent {
+        guard content.categoryIdentifier.isEmpty else { return content }
         let buttons = actions(content.userInfo[actionsKey])
-        guard !buttons.isEmpty else { return nil }
-        let actions = buttons.map { UNNotificationAction(identifier: $0.id, title: $0.title, options: [.foreground]) }
+        guard !buttons.isEmpty, let mutable = content.mutableCopy() as? UNMutableNotificationContent else { return content }
+        let center = UNUserNotificationCenter.current()
+        let existing = await center.notificationCategories()
+        let (category, updated) = register(buttons, existing: existing, now: Date())
+        if let updated {
+            center.setNotificationCategories(updated)
+            // Read back so the registration has landed before the notification is shown.
+            _ = await center.notificationCategories()
+        }
+        mutable.categoryIdentifier = category
+        return mutable
+    }
+
+    /// The category id for `buttons` and the new category set (nil when an identical category is
+    /// already registered). Ids are `herald.actions.<hash of buttons>.<unix seconds>`; only the newest
+    /// `maxActionCategories` Herald categories are kept, and the app's own categories are untouched.
+    static func register(
+        _ buttons: [(id: String, title: String)], existing: Set<UNNotificationCategory>, now: Date
+    ) -> (id: String, categories: Set<UNNotificationCategory>?) {
         let key = buttons.map { "\($0.id)\u{1F}\($0.title)" }.joined(separator: "\u{1E}")
-        return UNNotificationCategory(
-            identifier: "herald.actions.\(fnv1a(key))", actions: actions, intentIdentifiers: [], options: [.customDismissAction]
-        )
+        let prefix = "\(categoryPrefix)\(fnv1a(key))."
+        if let match = existing.first(where: { $0.identifier.hasPrefix(prefix) }) {
+            return (match.identifier, nil)
+        }
+        let id = "\(prefix)\(Int(now.timeIntervalSince1970))"
+        let actions = buttons.map { UNNotificationAction(identifier: $0.id, title: $0.title, options: [.foreground]) }
+        let category = UNNotificationCategory(identifier: id, actions: actions, intentIdentifiers: [], options: [.customDismissAction])
+        let herald = existing.filter { $0.identifier.hasPrefix(categoryPrefix) }
+            .sorted { timestamp($0.identifier) > timestamp($1.identifier) }
+        let keep = herald.prefix(maxActionCategories - 1)
+        let others = existing.filter { !$0.identifier.hasPrefix(categoryPrefix) }
+        return (id, others.union(keep).union([category]))
+    }
+
+    private static func timestamp(_ identifier: String) -> Int {
+        Int(identifier.split(separator: ".").last ?? "") ?? 0
     }
 
     /// `herald_actions` as a JSON array or a JSON string; malformed entries skipped, at most 3 kept.
@@ -123,8 +148,8 @@ public enum HeraldRichPush {
         return String(hash, radix: 16)
     }
 
-    /// Returns `content` with the push's `image_url` attached, or `content` unchanged when there is no
-    /// https image, the download fails or times out, or the file is not a supported image.
+    /// Returns `content` with the push's image attached, or `content` unchanged when there is no https
+    /// image, the download fails or times out, it is over 10 MB, or it is not JPEG, PNG, GIF or HEIC.
     public static func attachImage(
         to content: UNNotificationContent, timeout: TimeInterval = defaultTimeout, session: URLSession = .shared
     ) async -> UNNotificationContent {
@@ -136,45 +161,56 @@ public enum HeraldRichPush {
         return mutable
     }
 
-    /// The `image_url` value when it is an https URL.
+    /// The first `imageKeys` value that is an https URL.
     public static func imageURL(in userInfo: [AnyHashable: Any]) -> URL? {
-        guard let text = userInfo[imageKey] as? String, let url = URL(string: text), url.scheme?.lowercased() == "https"
-        else { return nil }
-        return url
+        for key in imageKeys {
+            if let text = userInfo[key] as? String, let url = URL(string: text), url.scheme?.lowercased() == "https" {
+                return url
+            }
+        }
+        return nil
     }
 
+    /// Downloads to a file (never into memory, so a large body cannot exhaust the extension's memory).
     static func downloadAttachment(from url: URL, timeout: TimeInterval, session: URLSession) async -> UNNotificationAttachment? {
         var mutableRequest = URLRequest(url: url)
         mutableRequest.timeoutInterval = timeout
         let request = mutableRequest
+        let fileManager = FileManager.default
+        let dir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        var downloaded: URL?
+        defer { if let downloaded { try? fileManager.removeItem(at: downloaded) } }
         do {
-            let (data, response) = try await withTimeout(timeout) { try await session.data(for: request) }
+            let (file, response) = try await withTimeout(timeout) { try await session.download(for: request) }
+            downloaded = file
+            let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                !data.isEmpty, data.count <= maxBytes,
+                size > 0, size <= maxBytes, http.expectedContentLength <= Int64(maxBytes),
                 let ext = fileExtension(mimeType: http.mimeType, url: url)
             else { return nil }
-            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let file = dir.appendingPathComponent("image.\(ext)")
-            try data.write(to: file)
-            // The system moves the file into its own store, so nothing is left to clean up on success.
-            return try UNNotificationAttachment(identifier: "herald-image", url: file)
+            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            let target = dir.appendingPathComponent("image.\(ext)")
+            try fileManager.moveItem(at: file, to: target)
+            downloaded = nil
+            // The system moves the file into its own store on success.
+            return try UNNotificationAttachment(identifier: "herald-image", url: target)
         } catch {
+            try? fileManager.removeItem(at: dir)
             return nil
         }
     }
 
-    /// The system picks the attachment type from the file extension.
+    /// The system picks the attachment type from the file extension. Only types UNNotificationAttachment
+    /// accepts for images.
     static func fileExtension(mimeType: String?, url: URL) -> String? {
         switch mimeType?.lowercased() {
         case "image/jpeg", "image/jpg": return "jpg"
         case "image/png": return "png"
         case "image/gif": return "gif"
         case "image/heic": return "heic"
-        case "image/webp": return "webp"
         default:
             let ext = url.pathExtension.lowercased()
-            return ["jpg", "jpeg", "png", "gif", "heic", "webp"].contains(ext) ? ext : nil
+            return ["jpg", "jpeg", "png", "gif", "heic"].contains(ext) ? ext : nil
         }
     }
 

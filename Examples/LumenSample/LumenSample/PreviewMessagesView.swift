@@ -46,6 +46,18 @@ enum PreviewMessages {
             var messages = body["inAppMessages"] as? [[String: Any]],
             var full = messages.first(where: { $0["id"] as? String == "msg_2" })
         else { return }
+        // The fixture's example.com images do not exist; show a bundled photo instead.
+        let image: Any = Bundle.main.url(forResource: "preview-image", withExtension: "webp")?.absoluteString ?? NSNull()
+        if var cards = body["contentCards"] as? [[String: Any]] {
+            for index in cards.indices where cards[index]["imageUrl"] is String { cards[index]["imageUrl"] = image }
+            body["contentCards"] = cards
+        }
+        for index in messages.indices where messages[index]["id"] as? String == "msg_2" {
+            var content = messages[index]["content"] as? [String: Any] ?? [:]
+            content["imageUrl"] = image
+            messages[index]["content"] = content
+            full["content"] = content
+        }
         full["id"] = "preview_full"
         full["type"] = "full"
         messages.append(full)

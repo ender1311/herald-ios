@@ -23,6 +23,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
         Herald.useDefaultInAppUI(theme: HeraldTheme())
         UNUserNotificationCenter.current().delegate = self
+        // Buttons for pushes whose payload sets `aps.category` to "workout_reminder".
+        Herald.shared.registerPushCategories([
+            HeraldPushCategory(id: "workout_reminder", buttons: [
+                .init(id: "start", title: "Start workout"),
+                .init(id: "later", title: "Later", opensApp: false),
+            ]),
+        ])
         return true
     }
 
@@ -30,14 +37,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         Herald.shared.setPushToken(deviceToken)
     }
 
-    // Logs the open (or button tap) and opens the push's deep link. The system calls this on the main thread.
+    // Logs the open (or button tap) and opens the push's deep link.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        // UNNotificationResponse is not Sendable; it is only read on the main thread here.
-        nonisolated(unsafe) let response = response
-        MainActor.assumeIsolated { _ = Herald.shared.handleNotificationResponse(response) }
+        Herald.shared.handleNotificationResponse(response)
         completionHandler()
     }
 

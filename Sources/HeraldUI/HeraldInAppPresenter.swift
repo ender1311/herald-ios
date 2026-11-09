@@ -123,9 +123,11 @@ final class OverlaySession {
         guard let onRemoved else { return }
         self.onRemoved = nil
         if let disconnectObserver { NotificationCenter.default.removeObserver(disconnectObserver) }
+        // Hiding resigns key, so check first.
+        let wasKey = window.isKeyWindow
         window.isHidden = true
         window.rootViewController = nil
-        if window.isKeyWindow { previousKeyWindow?.makeKey() }
+        if wasKey { previousKeyWindow?.makeKey() }
         UIAccessibility.post(notification: .screenChanged, argument: nil)
         onRemoved()
     }

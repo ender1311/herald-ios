@@ -238,20 +238,37 @@ actor HeraldCore {
     }
 
     /// The user acted on a Herald push (`open`, `button` or `dismiss`). Opens evaluate `push_open` triggers.
+    /// `action` is open, button or dismiss. A button tap is also an open (Android parity): the open is
+    /// logged first, then the button, each at most once per decision id. Without a decision id there is
+    /// no per-send key, so nothing is deduplicated.
     func pushResponse(messageId: String, decisionId: String?, action: String, buttonId: String?) {
         guard state.enabled else { return }
-        // A redelivered response counts once per decision. Without a decision id there is no per-send key.
-        if action == "open", let decisionId, !decisionId.isEmpty {
-            if state.recentPushOpens.contains(decisionId) { return }
-            state.recentPushOpens.append(decisionId)
+        switch action {
+        case "button":
+            let opened = recordPush(messageId: messageId, decisionId: decisionId, action: "open", buttonId: nil)
+            recordPush(messageId: messageId, decisionId: decisionId, action: "button", buttonId: buttonId)
+            if opened { fire(.pushOpen) }
+        case "open":
+            if recordPush(messageId: messageId, decisionId: decisionId, action: "open", buttonId: nil) { fire(.pushOpen) }
+        default:
+            recordPush(messageId: messageId, decisionId: decisionId, action: action, buttonId: buttonId)
+        }
+    }
+
+    /// Logs one push interaction; false when it was a repeat or invalid.
+    @discardableResult
+    private func recordPush(messageId: String, decisionId: String?, action: String, buttonId: String?) -> Bool {
+        if action != "dismiss", let decisionId, !decisionId.isEmpty {
+            // Opens keep the bare decision id as their key (the format already persisted).
+            let key = action == "open" ? decisionId : "\(decisionId)#\(action)"
+            if state.recentPushOpens.contains(key) { return false }
+            state.recentPushOpens.append(key)
             if state.recentPushOpens.count > Self.maxRecentPushOpens {
                 state.recentPushOpens.removeFirst(state.recentPushOpens.count - Self.maxRecentPushOpens)
             }
             persist()
         }
-        guard logInteraction(messageId: messageId, kind: "push", action: action, decisionId: decisionId, buttonId: buttonId)
-        else { return }
-        if action != "dismiss" { fire(.pushOpen) }
+        return logInteraction(messageId: messageId, kind: "push", action: action, decisionId: decisionId, buttonId: buttonId)
     }
 
     // MARK: - Content cards

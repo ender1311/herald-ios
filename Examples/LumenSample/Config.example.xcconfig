@@ -2,3 +2,8 @@
 // publishable app key (Herald dashboard > Connections > Mobile SDK).
 HERALD_ENDPOINT = https:/$()/your-herald.example.com
 HERALD_APP_KEY = pk_live_your_key
+
+// Push on a device needs your Apple team (for the APNs entitlement in LumenSample.entitlements) and
+// a bundle id your team can register for push (change it in the target settings). The simulator
+// builds without either.
+// DEVELOPMENT_TEAM = ABCDE12345

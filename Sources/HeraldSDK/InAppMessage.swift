@@ -145,6 +145,10 @@ public enum InAppMessageDisplayChoice: Sendable {
 }
 
 /// Lets the app hold or drop a message before it appears.
+///
+/// `shouldDisplay` can be asked more than once for the same message: when it answers `.display` but the
+/// presenter cannot show it yet (no foreground scene), the message stays pending and the delegate is
+/// asked again on the next attempt. Keep it free of side effects such as analytics.
 @MainActor
 public protocol InAppMessageDelegate: AnyObject {
     func shouldDisplay(_ message: InAppMessage) -> InAppMessageDisplayChoice

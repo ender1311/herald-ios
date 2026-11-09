@@ -10,11 +10,14 @@ import UserNotifications
 /// The SDK entry point. Call `Herald.configure` once at launch, then use `Herald.shared`.
 ///
 /// Every call is safe from any thread, returns immediately and is applied in call order.
-/// Calls made before `configure` are kept and applied once it runs. The SDK never throws into
+/// Calls made before `configure` are kept (up to 1,000; later ones are dropped with a warning) and
+/// applied once it runs. The SDK never throws into
 /// the host app: invalid input is logged and skipped.
 public final class Herald: Sendable {
     public static let shared = Herald()
     public static let sdkVersion = "0.1.0"
+    /// Calls kept before `configure` runs (and while the core is busy); newer calls are dropped beyond it.
+    static let maxBufferedCalls = 1_000
 
     /// The current user's content cards.
     public let contentCards: ContentCardStore
@@ -31,7 +34,7 @@ public final class Herald: Sendable {
     init() {
         contentCards = ContentCardStore()
         bridge = MainActorBridge(store: contentCards)
-        (stream, commands) = AsyncStream.makeStream(of: Command.self, bufferingPolicy: .bufferingOldest(10_000))
+        (stream, commands) = AsyncStream.makeStream(of: Command.self, bufferingPolicy: .bufferingOldest(Self.maxBufferedCalls))
     }
 
     // MARK: - Setup
@@ -84,7 +87,9 @@ public final class Herald: Sendable {
     }
 
     func send(_ command: @escaping Command) {
-        commands.yield(command)
+        if case .dropped = commands.yield(command) {
+            Log.warning("Herald call dropped: more than \(Self.maxBufferedCalls) calls are waiting (is Herald.configure called?)")
+        }
     }
 
     // MARK: - Identity
@@ -208,17 +213,25 @@ public final class Herald: Sendable {
     }
 
     #if os(iOS)
-    /// Forward from `userNotificationCenter(_:didReceive:withCompletionHandler:)`. Logs the open,
-    /// button or dismissal, evaluates `push_open` in-app triggers and opens the push's deep link.
+    /// Forward from `userNotificationCenter(_:didReceive:withCompletionHandler:)`. Logs the open, button
+    /// (a button tap logs the open too) or dismissal, evaluates `push_open` in-app triggers and opens the
+    /// push's deep link (a button's own `deeplink` when it has one). Callable from any isolation.
     /// Returns false when the notification did not come from Herald.
-    @MainActor @discardableResult
-    public func handleNotificationResponse(_ response: UNNotificationResponse) -> Bool {
-        guard let payload = HeraldPushPayload(userInfo: response.notification.request.content.userInfo) else {
-            return false
-        }
+    @discardableResult
+    public nonisolated func handleNotificationResponse(_ response: UNNotificationResponse) -> Bool {
+        handleNotificationResponse(
+            userInfo: response.notification.request.content.userInfo, actionIdentifier: response.actionIdentifier
+        )
+    }
+
+    /// The same as `handleNotificationResponse(_:)`, from the notification's `userInfo` and the
+    /// response's `actionIdentifier`.
+    @discardableResult
+    public nonisolated func handleNotificationResponse(userInfo: [AnyHashable: Any], actionIdentifier: String) -> Bool {
+        guard let payload = HeraldPushPayload(userInfo: userInfo) else { return false }
         let action: String
         let buttonId: String?
-        switch response.actionIdentifier {
+        switch actionIdentifier {
         case UNNotificationDefaultActionIdentifier:
             action = "open"
             buttonId = nil
@@ -227,13 +240,13 @@ public final class Herald: Sendable {
             buttonId = nil
         default:
             action = "button"
-            buttonId = response.actionIdentifier
+            buttonId = actionIdentifier
         }
         let decisionId = payload.decisionId
         let messageId = payload.interactionId
         send { core in core.pushResponse(messageId: messageId, decisionId: decisionId, action: action, buttonId: buttonId) }
         if action != "dismiss", let url = payload.deeplink(forAction: buttonId) {
-            openDeepLink(url)
+            Task { @MainActor in self.openDeepLink(url) }
         }
         return true
     }

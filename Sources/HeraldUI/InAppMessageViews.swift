@@ -10,6 +10,7 @@ public struct SlideupMessageView: View {
     @Environment(\.heraldTheme) private var theme
     @Environment(\.colorScheme) private var colorScheme
     @State private var drag: CGSize = .zero
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     public init(message: InAppMessage, actions: InAppMessageActions) {
         self.message = message
@@ -25,6 +26,8 @@ public struct SlideupMessageView: View {
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 MessageText(message: message, colors: colors, alignment: .leading)
+                    // The banner never covers most of the screen at the largest text sizes.
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : nil)
                 if let first {
                     Text(first.text).font(theme.typography.button).foregroundStyle(colors.text)
                 }
@@ -81,7 +84,8 @@ public struct ModalMessageView: View {
                 MessageButtons(message: message, colors: colors, actions: actions)
             }
             .padding(theme.spacing * 1.5)
-            .padding(.top, message.content.imageUrl == nil ? theme.spacing : 0)
+            // Keeps the header below the 44 pt close button when there is no image.
+            .padding(.top, message.content.imageUrl == nil ? max(theme.spacing, 44 - theme.spacing * 0.5) : 0)
         }
         ZStack {
             theme.colors(for: colorScheme).scrim
@@ -141,7 +145,8 @@ public struct FullScreenMessageView: View {
     }
 }
 
-/// Renders `content.html` in a web view: see `HTMLMessageWebView` for the `herald` bridge and link rules.
+/// Renders `content.html` in a web view with a native close button: see `HTMLMessageWebView` for the
+/// `herald` bridge and link rules.
 public struct HTMLMessageView: View {
     let message: InAppMessage
     let actions: InAppMessageActions
@@ -155,9 +160,11 @@ public struct HTMLMessageView: View {
 
     public var body: some View {
         let colors = MessageColors(style: message.style, theme: theme, colorScheme: colorScheme)
-        ZStack {
+        ZStack(alignment: .topTrailing) {
             colors.background.ignoresSafeArea()
             HTMLMessageWebView(html: message.content.html ?? "", background: colors.background, actions: actions)
+            // Always a way out, even if the page has no close control or never loads.
+            CloseButton(tint: colors.text, actions: actions)
         }
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(.isModal)

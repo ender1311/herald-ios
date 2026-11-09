@@ -60,6 +60,9 @@ final class RichPushTests: XCTestCase {
         XCTAssertNil(HeraldRichPush.imageURL(in: ["image_url": "http://x.test/a.png"]))
         XCTAssertNil(HeraldRichPush.imageURL(in: ["image_url": "file:///etc/passwd"]))
         XCTAssertNil(HeraldRichPush.imageURL(in: [:]))
+        XCTAssertEqual(HeraldRichPush.imageURL(in: ["image": "https://x.test/b.png"]), URL(string: "https://x.test/b.png"))
+        XCTAssertEqual(HeraldRichPush.imageURL(in: ["image_url": "https://x.test/a.png", "image": "https://x.test/b.png"]), URL(string: "https://x.test/a.png"))
+        XCTAssertEqual(HeraldRichPush.imageURL(in: ["image_url": "http://x.test/a.png", "image": "https://x.test/b.png"]), URL(string: "https://x.test/b.png"))
     }
 
     func testAttachesDownloadedImage() async {
@@ -83,6 +86,16 @@ final class RichPushTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.5)
     }
 
+    func testFallsBackOnTooLargeAndWebp() async {
+        StubProtocol.body = Data(count: HeraldRichPush.maxBytes + 1)
+        var result = await HeraldRichPush.attachImage(to: content(["image_url": "https://x.test/a.png"]), timeout: 5, session: session)
+        XCTAssertTrue(result.attachments.isEmpty)
+        StubProtocol.body = png
+        StubProtocol.mimeType = "image/webp"
+        result = await HeraldRichPush.attachImage(to: content(["image_url": "https://x.test/a.webp"]), timeout: 5, session: session)
+        XCTAssertTrue(result.attachments.isEmpty, "UNNotificationAttachment does not take webp")
+    }
+
     func testFallsBackOnUnknownType() async {
         StubProtocol.mimeType = "text/html"
         let result = await HeraldRichPush.attachImage(to: content(["image_url": "https://x.test/page"]), timeout: 5, session: session)
@@ -91,26 +104,39 @@ final class RichPushTests: XCTestCase {
 }
 
 final class ActionCategoryTests: XCTestCase {
-    private func content(_ userInfo: [AnyHashable: Any], category: String = "") -> UNNotificationContent {
-        let content = UNMutableNotificationContent()
-        content.userInfo = userInfo
-        content.categoryIdentifier = category
-        return content
+    private let json = #"[{"id":"a1","title":"Open","deeplink":"lumen://a"},{"id":"a2","title":"Later"},{"id":""},{"id":"a3","title":"C"},{"id":"a4","title":"D"}]"#
+
+    func testParsesActions() {
+        XCTAssertEqual(HeraldRichPush.actions(json).map(\.id), ["a1", "a2", "a3"])
+        XCTAssertEqual(HeraldRichPush.actions([["id": "x", "title": "X"]]).map(\.title), ["X"])
+        XCTAssertTrue(HeraldRichPush.actions("nope").isEmpty)
     }
 
-    func testBuildsCategoryFromActions() throws {
-        let json = #"[{"id":"a1","title":"Open","deeplink":"lumen://a"},{"id":"a2","title":"Later"},{"id":""},{"id":"a3","title":"C"},{"id":"a4","title":"D"}]"#
-        let category = try XCTUnwrap(HeraldRichPush.actionCategory(for: content(["herald_actions": json])))
-        XCTAssertEqual(category.actions.map(\.identifier), ["a1", "a2", "a3"])
-        XCTAssertEqual(category.actions.map(\.title), ["Open", "Later", "C"])
-        // Same buttons, same category id.
-        XCTAssertEqual(HeraldRichPush.actionCategory(for: content(["herald_actions": json]))?.identifier, category.identifier)
+    func testRegistersCategoryAndReusesIdenticalOne() throws {
+        let buttons = HeraldRichPush.actions(json)
+        let app = UNNotificationCategory(identifier: "app", actions: [], intentIdentifiers: [])
+        let (id, set) = HeraldRichPush.register(buttons, existing: [app], now: Date(timeIntervalSince1970: 100))
+        let categories = try XCTUnwrap(set)
+        XCTAssertTrue(id.hasPrefix("herald.actions.") && id.hasSuffix(".100"))
+        XCTAssertEqual(categories.first { $0.identifier == id }?.actions.map(\.identifier), ["a1", "a2", "a3"])
+        XCTAssertTrue(categories.contains(app))
+        let again = HeraldRichPush.register(buttons, existing: categories, now: Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(again.id, id)
+        XCTAssertNil(again.categories)
     }
 
-    func testNoCategoryWithoutActionsOrWhenApsCategorySet() {
-        XCTAssertNil(HeraldRichPush.actionCategory(for: content([:])))
-        XCTAssertNil(HeraldRichPush.actionCategory(for: content(["herald_actions": "nope"])))
-        XCTAssertNil(HeraldRichPush.actionCategory(for: content(["herald_actions": [["id": "x", "title": "X"]]], category: "app")))
-        XCTAssertEqual(HeraldRichPush.actionCategory(for: content(["herald_actions": [["id": "x", "title": "X"]]]))?.actions.count, 1)
+    func testKeepsOnlyNewestHeraldCategories() throws {
+        var existing: Set<UNNotificationCategory> = [UNNotificationCategory(identifier: "app", actions: [], intentIdentifiers: [])]
+        for n in 1...12 {
+            existing.insert(UNNotificationCategory(identifier: "herald.actions.h\(n).\(n)", actions: [], intentIdentifiers: []))
+        }
+        let (id, set) = HeraldRichPush.register([("x", "X")], existing: existing, now: Date(timeIntervalSince1970: 1000))
+        let categories = try XCTUnwrap(set)
+        let herald = categories.map(\.identifier).filter { $0.hasPrefix("herald.actions.") }
+        XCTAssertEqual(herald.count, HeraldRichPush.maxActionCategories)
+        XCTAssertTrue(herald.contains(id))
+        XCTAssertFalse(herald.contains("herald.actions.h3.3"), "oldest dropped")
+        XCTAssertTrue(herald.contains("herald.actions.h12.12"))
+        XCTAssertTrue(categories.contains { $0.identifier == "app" })
     }
 }

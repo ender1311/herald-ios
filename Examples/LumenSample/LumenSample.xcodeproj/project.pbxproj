@@ -16,6 +16,7 @@
 		835C5F40B0EF363E234984FB /* HeraldNotificationService in Frameworks */ = {isa = PBXBuildFile; productRef = 80892BF1C5CB16D9C91C90D3 /* HeraldNotificationService */; };
 		A7CBB34AED0D926B8D171EDC /* PreviewMessagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE6B237D15066A7F0C09E414 /* PreviewMessagesView.swift */; };
 		C4F2A0583A7185131BAE66C4 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15121AA838EFFECC808CD73A /* RootView.swift */; };
+		CA1603BB69CE7FC75F6A721F /* preview-image.webp in Resources */ = {isa = PBXBuildFile; fileRef = EC5BE783A11A9BCF4078A0C9 /* preview-image.webp */; };
 		D5F3969EEEF134721355F4AE /* messages.json in Resources */ = {isa = PBXBuildFile; fileRef = 8F512F7740056B49CCFD5791 /* messages.json */; };
 		F0C530B82D49D47535374D7F /* LumenSampleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FD3B1DB15FC0E0396EB04C0 /* LumenSampleApp.swift */; };
 /* End PBXBuildFile section */
@@ -52,12 +53,14 @@
 		4085F2098464DEDD9BEE2CDE /* LumenNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = LumenNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C090D37764A95C9316CDCA0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		549125B773C4AEA100D62465 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		757DD33400161CCA1219D7F6 /* LumenSample.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LumenSample.entitlements; sourceTree = "<group>"; };
 		8F512F7740056B49CCFD5791 /* messages.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = messages.json; sourceTree = "<group>"; };
 		CE6B237D15066A7F0C09E414 /* PreviewMessagesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewMessagesView.swift; sourceTree = "<group>"; };
 		DA4F9933C1D6EA561FD55232 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		DDE824837E18663A88621327 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		EC5BE783A11A9BCF4078A0C9 /* preview-image.webp */ = {isa = PBXFileReference; path = "preview-image.webp"; sourceTree = "<group>"; };
 		F859D4235A5147F5F0F3B08A /* LumenSample.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = LumenSample.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		"TEMP_650D4EE3-C3D3-4B51-B052-1CF9575D08F8" /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
+		"TEMP_CB6B9321-CC17-460A-8819-7AF45A9CD9C3" /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -104,8 +107,10 @@
 			children = (
 				DDE824837E18663A88621327 /* HomeView.swift */,
 				4C090D37764A95C9316CDCA0 /* Info.plist */,
+				757DD33400161CCA1219D7F6 /* LumenSample.entitlements */,
 				0FD3B1DB15FC0E0396EB04C0 /* LumenSampleApp.swift */,
 				8F512F7740056B49CCFD5791 /* messages.json */,
+				EC5BE783A11A9BCF4078A0C9 /* preview-image.webp */,
 				CE6B237D15066A7F0C09E414 /* PreviewMessagesView.swift */,
 				15121AA838EFFECC808CD73A /* RootView.swift */,
 				3F870AD91A0A61558B12E2DB /* SettingsView.swift */,
@@ -131,10 +136,10 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		"TEMP_93C51375-D3FF-4823-957C-E36ACD968E37" /* LumenSample */ = {
+		"TEMP_D1D9C537-35B1-4D5F-BEBF-26895BF042ED" /* LumenSample */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_650D4EE3-C3D3-4B51-B052-1CF9575D08F8" /* Base.xcconfig */,
+				"TEMP_CB6B9321-CC17-460A-8819-7AF45A9CD9C3" /* Base.xcconfig */,
 			);
 			path = LumenSample;
 			sourceTree = "<group>";
@@ -230,6 +235,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D5F3969EEEF134721355F4AE /* messages.json in Resources */,
+				CA1603BB69CE7FC75F6A721F /* preview-image.webp in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -285,7 +291,7 @@
 		};
 		34E902609FED75901083BA87 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_650D4EE3-C3D3-4B51-B052-1CF9575D08F8" /* Base.xcconfig */;
+			baseConfigurationReference = "TEMP_CB6B9321-CC17-460A-8819-7AF45A9CD9C3" /* Base.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -353,6 +359,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = LumenSample/LumenSample.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = LumenSample/Info.plist;
@@ -368,7 +375,7 @@
 		};
 		9158B138F82575B3F00B0ED8 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_650D4EE3-C3D3-4B51-B052-1CF9575D08F8" /* Base.xcconfig */;
+			baseConfigurationReference = "TEMP_CB6B9321-CC17-460A-8819-7AF45A9CD9C3" /* Base.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -429,6 +436,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = LumenSample/LumenSample.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = LumenSample/Info.plist;

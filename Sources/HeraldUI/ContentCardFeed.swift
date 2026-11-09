@@ -1,13 +1,19 @@
 #if os(iOS)
 import HeraldSDK
+import os
 import SwiftUI
+
+enum HeraldUILog {
+    static let logger = Logger(subsystem: "com.herald.sdk", category: "ui")
+}
 
 /// The current user's content cards from `Herald.shared.contentCards`, pinned first then newest.
 ///
 /// Impressions are logged once per card when at least half of it is visible. Clicks are logged, then
 /// passed to `onCardClick`, or by default the card's url opens through `Herald.shared.deepLinkHandler`
 /// and then the environment's `openURL`. Dismissible cards can be swiped away (VoiceOver: the Dismiss
-/// action), which logs the dismissal.
+/// action), which logs the dismissal. Impressions are written to the unified log
+/// (subsystem `com.herald.sdk`, category `ui`, debug level).
 ///
 /// ```swift
 /// ContentCardFeed()                                  // default cards
@@ -57,62 +63,37 @@ public struct ContentCardFeed<CardContent: View>: View {
             store.cards, filter: { !hidden.contains($0.id) && filter($0) }, order: order
         )
         GeometryReader { viewport in
-            Group {
-                if cards.isEmpty {
-                    Text(emptyMessage)
-                        .font(theme.typography.body)
-                        .foregroundStyle(colors.onSurfaceVariant)
-                        .padding(theme.spacing)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List {
+            if cards.isEmpty {
+                Text(emptyMessage)
+                    .font(theme.typography.body)
+                    .foregroundStyle(colors.onSurfaceVariant)
+                    .padding(theme.spacing)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: theme.spacing * 0.75) {
                         ForEach(cards) { card in
-                            row(card)
-                                .listRowInsets(EdgeInsets(
-                                    top: theme.spacing * 0.375, leading: theme.spacing,
-                                    bottom: theme.spacing * 0.375, trailing: theme.spacing
-                                ))
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
+                            FeedRow(
+                                card: card, viewportHeight: viewport.size.height, space: Self.space,
+                                onVisible: { logImpression(card) }, onDismiss: { dismiss(card) }
+                            ) {
+                                cardContent(card) { click(card) }
+                            }
                         }
                     }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
+                    .padding(theme.spacing)
                 }
-            }
-            .onPreferenceChange(CardFrameKey.self) { frames in
-                logImpressions(frames, viewport: CGRect(origin: .zero, size: viewport.size))
+                .coordinateSpace(name: Self.space)
             }
         }
-        .coordinateSpace(name: Self.space)
         .background(colors.background)
     }
 
-    @ViewBuilder
-    private func row(_ card: ContentCard) -> some View {
-        let content = cardContent(card) { click(card) }
-            .background(GeometryReader { geometry in
-                Color.clear.preference(key: CardFrameKey.self, value: [card.id: geometry.frame(in: .named(Self.space))])
-            })
-        if card.dismissible {
-            content.swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                Button(role: .destructive) { dismiss(card) } label: { Label("Dismiss", systemImage: "xmark") }
-            }
-        } else {
-            content
-        }
-    }
-
-    private func logImpressions(_ frames: [String: CGRect], viewport: CGRect) {
-        for (id, frame) in frames where !impressed.contains(id) {
-            let visible = frame.intersection(viewport)
-            let height = visible.isNull ? 0 : visible.height
-            guard ContentCardFeedDefaults.isImpression(visibleHeight: height, fullHeight: frame.height),
-                let card = store.cards.first(where: { $0.id == id })
-            else { continue }
-            impressed.insert(id)
-            Herald.shared.logImpression(card)
-        }
+    private func logImpression(_ card: ContentCard) {
+        guard !impressed.contains(card.id) else { return }
+        impressed.insert(card.id)
+        HeraldUILog.logger.debug("Card impression \(card.id, privacy: .public)")
+        Herald.shared.logImpression(card)
     }
 
     private func click(_ card: ContentCard) {
@@ -132,6 +113,66 @@ public struct ContentCardFeed<CardContent: View>: View {
     }
 }
 
+/// One card: reports when at least half of it is inside the scroll view, and handles swipe-to-dismiss
+/// (a horizontal drag past a third of its width; VoiceOver: the Dismiss action) when the card allows it.
+private struct FeedRow<Content: View>: View {
+    let card: ContentCard
+    let viewportHeight: CGFloat
+    let space: String
+    let onVisible: () -> Void
+    let onDismiss: () -> Void
+    @ViewBuilder let content: () -> Content
+    @State private var dragX: CGFloat = 0
+    @State private var width: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let row = content()
+            .background(GeometryReader { geometry in
+                let frame = geometry.frame(in: .named(space))
+                Color.clear
+                    .onAppear { measure(frame) }
+                    .onChange(of: frame) { measure($0) }
+            })
+            .offset(x: dragX)
+        if card.dismissible {
+            row
+                .simultaneousGesture(swipe)
+                .accessibilityAction(named: Text("Dismiss")) { onDismiss() }
+        } else {
+            row
+        }
+    }
+
+    private func measure(_ frame: CGRect) {
+        width = frame.width
+        let visible = frame.intersection(CGRect(x: frame.minX, y: 0, width: frame.width, height: viewportHeight))
+        if ContentCardFeedDefaults.isImpression(visibleHeight: visible.isNull ? 0 : visible.height, fullHeight: frame.height) {
+            onVisible()
+        }
+    }
+
+    private var swipe: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onChanged { value in
+                // Vertical drags belong to the scroll view.
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                dragX = value.translation.width
+            }
+            .onEnded { _ in
+                if width > 0, abs(dragX) > width / 3 {
+                    let target = dragX > 0 ? width * 1.5 : -width * 1.5
+                    if reduceMotion { onDismiss() } else {
+                        withAnimation(.easeOut(duration: 0.2)) { dragX = target }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { onDismiss() }
+                    }
+                } else {
+                    withAnimation(.easeOut(duration: 0.2)) { dragX = 0 }
+                }
+            }
+    }
+}
+
 extension ContentCardFeed where CardContent == ContentCardView {
     /// The feed with Herald's default card views.
     public init(
@@ -143,14 +184,6 @@ extension ContentCardFeed where CardContent == ContentCardView {
         self.init(filter: filter, order: order, emptyMessage: emptyMessage, onCardClick: onCardClick) { card, onClick in
             ContentCardView(card: card, onClick: onClick)
         }
-    }
-}
-
-private struct CardFrameKey: PreferenceKey {
-    static let defaultValue: [String: CGRect] = [:]
-
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue()) { $1 }
     }
 }
 #endif

@@ -80,6 +80,21 @@ final class FixRoundTwoTests: XCTestCase {
         XCTAssertEqual(recent.last, "d59")
     }
 
+    // Fix round 1 (Task 5): a button tap logs the push open, then the button, once each per decision.
+    func testPushButtonLogsOpenThenButtonOnce() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.pushResponse(messageId: "dec_3", decisionId: "dec_3", action: "button", buttonId: "b1")
+        await core.pushResponse(messageId: "dec_3", decisionId: "dec_3", action: "button", buttonId: "b1")
+        await core.pushResponse(messageId: "dec_3", decisionId: "dec_3", action: "open", buttonId: nil)
+        await core.drain()
+        await core.flushNow()
+        let actions = try harness.transport.batchBodies().flatMap { $0.objectValue?["events"]?.arrayValue ?? [] }
+            .compactMap { $0.objectValue }.filter { $0["type"]?.stringValue == "interaction" }
+            .map { "\($0["action"]?.stringValue ?? ""):\($0["buttonId"]?.stringValue ?? "")" }
+        XCTAssertEqual(actions, ["open:", "button:b1"])
+    }
+
     // N4: an invalid $email or $phone is dropped on its own; the rest of the call is queued.
     func testInvalidContactAttributeDropsOnlyThatKey() async throws {
         let harness = CoreHarness()
