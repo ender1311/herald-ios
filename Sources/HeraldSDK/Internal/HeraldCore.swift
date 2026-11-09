@@ -117,8 +117,12 @@ actor HeraldCore {
     }
 
     func setUserToken(_ token: String?) {
-        state.userToken = (token?.isEmpty ?? true) ? nil : token
+        let token = (token?.isEmpty ?? true) ? nil : token
+        let changed = state.userToken != token
+        state.userToken = token
         persist()
+        // identify() already synced without the token, which a server requiring verification refuses.
+        if changed, token != nil, state.userId != nil, state.enabled { scheduleSync(thenFire: nil) }
     }
 
     /// Back to an anonymous user on the same device, with a new session.

@@ -32,6 +32,21 @@ final class CoreBehaviorTests: XCTestCase {
         XCTAssertEqual(etag, "\"v1\"")
     }
 
+    func testSetUserTokenAfterIdentifySyncsWithTheToken() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.identify(userId: "u1", traits: [:])
+        await core.drain()
+        XCTAssertNil(harness.transport.messageRequests.last?.value(forHTTPHeaderField: "x-herald-user-token"))
+        await core.setUserToken("tok1")
+        await core.drain()
+        XCTAssertEqual(harness.transport.messageRequests.last?.value(forHTTPHeaderField: "x-herald-user-token"), "tok1")
+        let count = harness.transport.messageRequests.count
+        await core.setUserToken("tok1")  // unchanged: no extra request
+        await core.drain()
+        XCTAssertEqual(harness.transport.messageRequests.count, count)
+    }
+
     func testDismissedCardStaysHidden() async throws {
         let harness = CoreHarness()
         let core = harness.makeCore()
