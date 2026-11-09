@@ -21,7 +21,8 @@ public final class InAppMessageActions {
         guard !finished else { return }
         Herald.shared.logClick(message, buttonId: button.id)
         clickedOnce = true
-        if case .deeplink(let url) = button.action {
+        // Deep links and web URLs both go through the app's deepLinkHandler, then the system.
+        if let url = button.action.url {
             Herald.shared.openDeepLink(url)
         }
         finish()

@@ -15,8 +15,18 @@ public struct InAppMessage: Sendable, Hashable, Identifiable {
     public enum ButtonAction: Sendable, Hashable {
         /// Close the message.
         case close
-        /// Open a deep link or web URL, then close the message.
+        /// Open an app deep link, then close the message.
         case deeplink(URL)
+        /// Open a web URL, then close the message.
+        case url(URL)
+
+        /// The URL to open, if any.
+        public var url: URL? {
+            switch self {
+            case .close: return nil
+            case .deeplink(let url), .url(let url): return url
+            }
+        }
     }
 
     public struct Button: Sendable, Hashable, Identifiable {
@@ -279,13 +289,18 @@ extension InAppMessage.Button: Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try c.decode(String.self, forKey: .id)
         var action = InAppMessage.ButtonAction.close
-        if let a = try? c.nestedContainer(keyedBy: ActionKeys.self, forKey: .action),
-            a.lenient(String.self, .type) == "deeplink", let url = a.lenientURL(.value)
-        {
-            action = .deeplink(url)
+        if let a = try? c.nestedContainer(keyedBy: ActionKeys.self, forKey: .action) {
+            let type = a.lenient(String.self, .type)
+            switch (type, a.lenientURL(.value)) {
+            case ("deeplink", let url?): action = .deeplink(url)
+            case ("url", let url?): action = .url(url)
+            case ("close", _): break
+            default: Log.debug("In-app button \(id): action \(type ?? "missing") without a usable URL; treated as close")
+            }
         }
-        self.init(id: try c.decode(String.self, forKey: .id), text: try c.decode(String.self, forKey: .text), action: action)
+        self.init(id: id, text: try c.decode(String.self, forKey: .text), action: action)
     }
 }
 

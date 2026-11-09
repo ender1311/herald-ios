@@ -32,8 +32,10 @@ struct InAppEngine {
     }
 
     /// The highest-priority eligible message among pending ids.
+    /// The highest-priority eligible pending message; ties go to the one pending longest (`ids` is
+    /// oldest first).
     func nextPending(_ ids: [String], now: Date) -> InAppMessage? {
-        best(of: messages.filter { ids.contains($0.id) && isEligible($0, now: now) })
+        best(of: ids.compactMap { id in messages.first { $0.id == id && isEligible($0, now: now) } })
     }
 
     /// Nothing on screen and the minimum interval has passed.
