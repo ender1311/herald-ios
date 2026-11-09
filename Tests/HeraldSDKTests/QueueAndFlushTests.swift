@@ -165,10 +165,16 @@ final class QueueAndFlushTests: XCTestCase {
 
         let requests = harness.transport.batchRequests
         let bodies = try harness.transport.batchBodies()
-        XCTAssertEqual(bodies.map { $0.objectValue?["userId"] }, [.string("u1"), .string("u2")])
-        XCTAssertEqual(requests.map { $0.value(forHTTPHeaderField: "x-herald-user-token") }, ["tok1", nil])
-        let firstNames = bodies[0].objectValue?["events"]?.arrayValue?.compactMap { $0.objectValue?["name"]?.stringValue }
-        XCTAssertEqual(firstNames, ["anon_before", "u1_event"], "anonymous events lead into the identify that follows")
+        XCTAssertEqual(bodies.map { $0.objectValue?["userId"] ?? .null }, [.null, .string("u1"), .null, .string("u2")])
+        XCTAssertEqual(requests.map { $0.value(forHTTPHeaderField: "x-herald-user-token") }, [nil, "tok1", nil, nil])
+        let types = bodies.map { $0.objectValue?["events"]?.arrayValue?.compactMap { $0.objectValue?["type"]?.stringValue } ?? [] }
+        XCTAssertFalse(types[0].contains("identify"), "pre-login events go out as an anonymous batch")
+        XCTAssertEqual(types[1].first, "identify", "the identify event belongs to the new user's batch")
+        XCTAssertEqual(types[3].first, "identify")
+        let names = bodies.map { $0.objectValue?["events"]?.arrayValue?.compactMap { $0.objectValue?["name"]?.stringValue } ?? [] }
+        XCTAssertEqual(names[0], ["anon_before"])
+        XCTAssertEqual(names[1], ["u1_event"])
+        XCTAssertEqual(names[2], ["anon_after"])
         let pending = await core.state.pendingTokens
         XCTAssertTrue(pending.isEmpty, "previous user's token is forgotten once their events are sent")
     }

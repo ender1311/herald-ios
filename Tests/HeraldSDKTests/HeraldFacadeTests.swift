@@ -21,13 +21,13 @@ final class HeraldFacadeTests: XCTestCase {
         herald.setEmail("maya@example.com")
         herald.flush()
 
-        for _ in 0..<200 where transport.batchRequests.isEmpty || herald.contentCards.cards.isEmpty {
+        for _ in 0..<200 where transport.batchRequests.count < 2 || herald.contentCards.cards.isEmpty {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        let body = try XCTUnwrap(transport.batchBodies().first?.objectValue)
-        XCTAssertEqual(body["userId"], "u_1")
-        let types = body["events"]?.arrayValue?.compactMap { $0.objectValue?["type"]?.stringValue }
-        XCTAssertEqual(types, ["session_start", "track", "identify", "track", "attributes"])
+        let bodies = try transport.batchBodies().compactMap(\.objectValue)
+        XCTAssertEqual(bodies.map { $0["userId"] ?? .null }, [.null, "u_1"], "pre-login events go out as an anonymous batch")
+        let types = bodies.map { $0["events"]?.arrayValue?.compactMap { $0.objectValue?["type"]?.stringValue } ?? [] }
+        XCTAssertEqual(types, [["session_start", "track"], ["identify", "track", "attributes"]])
         XCTAssertEqual(herald.contentCards.cards.map(\.id), ["msg_1", "msg_3", "msg_4"])
 
         var updates = herald.contentCards.updates.makeAsyncIterator()

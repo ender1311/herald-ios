@@ -104,8 +104,9 @@ final class CoreBehaviorTests: XCTestCase {
         XCTAssertNil(requests.last?.value(forHTTPHeaderField: "x-herald-user-token"))
         let types = last["events"]?.arrayValue?.compactMap { $0.objectValue?["type"]?.stringValue }
         XCTAssertEqual(types, ["session_start"])
-        let firstTypes = bodies.first?.objectValue?["events"]?.arrayValue?.compactMap { $0.objectValue?["type"]?.stringValue }
-        XCTAssertEqual(firstTypes?.last, "session_end", "the old session ends under the old user")
+        let u1Body = try XCTUnwrap(bodies.first { $0.objectValue?["userId"] == .string("u1") }?.objectValue)
+        let u1Types = u1Body["events"]?.arrayValue?.compactMap { $0.objectValue?["type"]?.stringValue }
+        XCTAssertEqual(u1Types?.last, "session_end", "the old session ends under the old user")
         // After reset, the anonymous sync carries no user id.
         let lastSync = try XCTUnwrap(harness.transport.messageRequests.last)
         XCTAssertEqual(lastSync.url?.query?.contains("userId"), false)

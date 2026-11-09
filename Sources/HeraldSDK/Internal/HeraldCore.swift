@@ -683,22 +683,14 @@ actor HeraldCore {
     /// run that follows them (that is the identify), but events never cross from one user to another
     /// or from a user back to anonymous.
     func nextBatch() -> (events: [QueuedEvent], userId: String?) {
+        // Each batch holds one recorded user (anonymous counts as one), so pre-login events stay anonymous.
+        guard let first = queue.entries.first else { return ([], nil) }
         var batch: [QueuedEvent] = []
-        var batchUser: String?
         for entry in queue.entries {
-            if batch.count == Self.maxBatchEvents { break }
-            if let user = entry.userId {
-                if batchUser == nil {
-                    batchUser = user
-                } else if batchUser != user {
-                    break
-                }
-            } else if batchUser != nil {
-                break
-            }
+            if batch.count == Self.maxBatchEvents || entry.userId != first.userId { break }
             batch.append(entry)
         }
-        return (Self.pushTokensFirst(batch), batchUser)
+        return (Self.pushTokensFirst(batch), first.userId)
     }
 
     /// Moves each push_token ahead of the batch's first push subscription event, keeping the order
