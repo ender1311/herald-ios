@@ -3,7 +3,8 @@ import Foundation
 /// Hooks from the core to the main-actor world (card store, in-app delegate and presenter).
 protocol CoreOutput: Sendable {
     func cardsChanged(_ cards: [ContentCard]) async
-    /// Asks the delegate and hands the message to the presenter. Returns nil when no presenter is set.
+    /// Asks the delegate and hands the message to the presenter. Returns nil when no presenter is set
+    /// or the presenter could not show it.
     func offer(_ message: InAppMessage, onClose: @escaping @MainActor @Sendable () -> Void) async
         -> InAppMessageDisplayChoice?
 }
@@ -386,7 +387,7 @@ actor HeraldCore {
             persist()
         case .later, nil:
             // Stays pending; retried on the next trigger, activation, close, presenter change or showNext().
-            if choice == nil { Log.info("No in-app presenter set; message \(messageId) stays pending") }
+            if choice == nil { Log.info("In-app message \(messageId) not shown (no presenter or no active scene); stays pending") }
             releaseSlot(messageId)
         }
     }
@@ -790,6 +791,17 @@ actor HeraldCore {
         } catch {
             Log.info("Message sync failed: \(error.localizedDescription)")
         }
+    }
+
+    func debugApply(_ payload: MessagesPayload) {
+        apply(payload)
+    }
+
+    func debugShowInAppMessage(_ messageId: String) {
+        guard state.enabled, showingId == nil, let message = engine.messages.first(where: { $0.id == messageId }) else { return }
+        showingId = message.id
+        engine.isShowing = true
+        spawn { core in await core.offer(message) }
     }
 
     private func apply(_ payload: MessagesPayload) {

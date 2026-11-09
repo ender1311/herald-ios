@@ -157,6 +157,22 @@ final class WireFormatTests: XCTestCase {
         let payload = HeraldPushPayload(userInfo: ["nexus_decision_id": "dec_9", "deeplink": "lumen://x"])
         XCTAssertEqual(payload?.decisionId, "dec_9")
         XCTAssertEqual(payload?.deeplink, URL(string: "lumen://x"))
+        XCTAssertEqual(payload?.interactionId, "dec_9")
+    }
+
+    func testHeraldPushPayloadOptionalKeys() throws {
+        let actions = #"[{"id":"a1","title":"Open","deeplink":"lumen://a"},{"id":"a2","title":"Later"},{"title":"no id"},{"id":"a3","title":"C"},{"id":"a4","title":"D"}]"#
+        let payload = try XCTUnwrap(HeraldPushPayload(userInfo: ["herald_message_id": "msg_7", "herald_actions": actions, "deeplink": "lumen://push"]))
+        XCTAssertNil(payload.decisionId)
+        XCTAssertEqual(payload.interactionId, "msg_7")
+        XCTAssertEqual(payload.actions.map(\.id), ["a1", "a2", "a3"], "malformed skipped, max 3")
+        XCTAssertEqual(payload.deeplink(forAction: "a1"), URL(string: "lumen://a"))
+        XCTAssertEqual(payload.deeplink(forAction: "a2"), URL(string: "lumen://push"), "falls back to the push deep link")
+        XCTAssertEqual(payload.deeplink(forAction: nil), URL(string: "lumen://push"))
+        // A native array (not a JSON string) is accepted too.
+        let native = HeraldPushPayload(userInfo: ["nexus_decision_id": "d", "herald_actions": [["id": "x", "title": "X"]]])
+        XCTAssertEqual(native?.actions.map(\.id), ["x"])
+        XCTAssertEqual(HeraldPushPayload(userInfo: ["nexus_decision_id": "d", "herald_actions": "not json"])?.actions, [])
     }
 
     func testAttributeValidation() {

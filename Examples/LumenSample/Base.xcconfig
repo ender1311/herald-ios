@@ -1,0 +1,6 @@
+// Defaults for the Lumen sample. Put your own values in Config.xcconfig (gitignored; copy
+// Config.example.xcconfig). In xcconfig files `//` starts a comment, so URLs use `/$()/`.
+HERALD_ENDPOINT = http:/$()/localhost:3000
+HERALD_APP_KEY = pk_test_replace_me
+
+#include? "Config.xcconfig"

@@ -1,0 +1,4 @@
+// Copy to Config.xcconfig (gitignored) and fill in your Herald endpoint and the connection's
+// publishable app key (Herald dashboard > Connections > Mobile SDK).
+HERALD_ENDPOINT = https:/$()/your-herald.example.com
+HERALD_APP_KEY = pk_live_your_key

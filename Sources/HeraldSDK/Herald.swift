@@ -230,8 +230,9 @@ public final class Herald: Sendable {
             buttonId = response.actionIdentifier
         }
         let decisionId = payload.decisionId
-        send { core in core.pushResponse(messageId: decisionId, decisionId: decisionId, action: action, buttonId: buttonId) }
-        if action != "dismiss", let url = payload.deeplink {
+        let messageId = payload.interactionId
+        send { core in core.pushResponse(messageId: messageId, decisionId: decisionId, action: action, buttonId: buttonId) }
+        if action != "dismiss", let url = payload.deeplink(forAction: buttonId) {
             openDeepLink(url)
         }
         return true
@@ -302,6 +303,24 @@ public final class Herald: Sendable {
         send { core in core.logMessageDismissal(message) }
     }
 
+    /// Debug and preview only: loads the cards and in-app messages of a `GET /api/v1/sdk/messages`
+    /// response body (for example the shared `messages.json` fixture) without a server. Nothing is saved
+    /// and the next sync replaces them. An unreadable body is logged and ignored.
+    public func debugLoadMessages(_ json: Data) {
+        do {
+            let payload = try MessagesPayload.decode(json)
+            send { core in core.debugApply(payload) }
+        } catch {
+            Log.warning("debugLoadMessages: unreadable body")
+        }
+    }
+
+    /// Debug and preview only: shows a loaded (or synced) in-app message now, skipping its trigger,
+    /// eligibility and the minimum interval. Does nothing while another message is on screen.
+    public func debugShowInAppMessage(_ messageId: String) {
+        send { core in core.debugShowInAppMessage(messageId) }
+    }
+
     /// Routes a URL through `deepLinkHandler`, falling back to the system.
     @MainActor public func openDeepLink(_ url: URL) {
         if bridge.deepLinkHandler?(url) == true { return }
@@ -330,8 +349,9 @@ final class MainActorBridge: CoreOutput {
     func offer(_ message: InAppMessage, onClose: @escaping @MainActor @Sendable () -> Void) -> InAppMessageDisplayChoice? {
         guard let presenter else { return nil }
         let choice = delegate?.shouldDisplay(message) ?? .display
-        if choice == .display {
-            presenter.present(message, onClose: onClose)
+        // A presenter that cannot show now (no active scene) leaves the message pending, like no presenter.
+        if choice == .display, !presenter.present(message, onClose: onClose) {
+            return nil
         }
         return choice
     }

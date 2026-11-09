@@ -151,12 +151,17 @@ public protocol InAppMessageDelegate: AnyObject {
 }
 
 /// Draws in-app messages. `HeraldUI` provides the default implementation; set your own on
-/// `Herald.shared.inAppMessagePresenter` to replace it. The SDK logs the impression when it calls
-/// `present`; log clicks with `logClick(_:buttonId:)`, and call `onClose` exactly once when the message
-/// leaves the screen (log a dismissal first with `logDismissal(_:)` if the user dismissed it).
+/// `Herald.shared.inAppMessagePresenter` to replace it.
+///
+/// Return true from `present` only when the message is on screen; the SDK then logs the impression and
+/// records it as shown. Return false when it cannot show now (for example no active window scene): the
+/// message stays pending and is offered again on the next activation, trigger or `showNext()`, and
+/// `onClose` must not be called. After returning true, log clicks with `logClick(_:buttonId:)` and call
+/// `onClose` exactly once when the message leaves the screen (log a dismissal first with
+/// `logDismissal(_:)` if the user dismissed it without clicking).
 @MainActor
 public protocol InAppMessagePresenter: AnyObject {
-    func present(_ message: InAppMessage, onClose: @escaping @MainActor @Sendable () -> Void)
+    func present(_ message: InAppMessage, onClose: @escaping @MainActor @Sendable () -> Void) -> Bool
 }
 
 // MARK: - Decoding

@@ -1,0 +1,51 @@
+# Optional: the committed LumenSample.xcodeproj builds without XcodeGen.
+# To regenerate it after editing this file: `xcodegen generate`.
+name: LumenSample
+options:
+  bundleIdPrefix: com.herald.sample
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+packages:
+  Herald:
+    path: ../..
+configFiles:
+  Debug: Base.xcconfig
+  Release: Base.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "-"
+targets:
+  LumenSample:
+    type: application
+    platform: iOS
+    sources:
+      - path: LumenSample
+    dependencies:
+      - package: Herald
+        product: HeraldSDK
+      - package: Herald
+        product: HeraldUI
+      - target: LumenNotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.herald.sample.lumen
+        INFOPLIST_FILE: LumenSample/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+  LumenNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: LumenNotificationService
+    dependencies:
+      - package: Herald
+        product: HeraldNotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.herald.sample.lumen.notification-service
+        INFOPLIST_FILE: LumenNotificationService/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO

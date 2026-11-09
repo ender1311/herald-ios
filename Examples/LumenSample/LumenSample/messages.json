@@ -1,0 +1,200 @@
+{
+  "data": {
+    "syncedAt": "2026-11-09T14:00:00.000Z",
+    "contentCards": [
+      {
+        "id": "msg_1",
+        "type": "captioned_image",
+        "title": "Your 7 AM session, upgraded",
+        "body": "14 workouts this month. Try a guided strength plan free for 7 days.",
+        "imageUrl": "https://example.com/maya.webp",
+        "cta": "Try Plus",
+        "url": "lumen://plus/strength",
+        "extras": {
+          "campaign": "upgrade"
+        },
+        "pinned": true,
+        "dismissible": true,
+        "categories": [
+          "upgrade"
+        ],
+        "createdAt": "2026-11-09T14:00:00.000Z",
+        "expiresAt": null,
+        "viewed": false,
+        "clicked": false,
+        "dismissed": false,
+        "decisionId": "dec_1"
+      },
+      {
+        "id": "msg_3",
+        "type": "classic",
+        "title": "New: mobility plans",
+        "body": "Ten-minute sessions for rest days.",
+        "imageUrl": null,
+        "cta": null,
+        "url": null,
+        "extras": {},
+        "pinned": false,
+        "dismissible": false,
+        "categories": [
+          "news"
+        ],
+        "createdAt": "2026-11-09T14:00:00.000Z",
+        "expiresAt": "2026-12-01T00:00:00.000Z",
+        "viewed": true,
+        "clicked": false,
+        "dismissed": false,
+        "decisionId": null
+      },
+      {
+        "id": "msg_4",
+        "type": "image_only",
+        "title": null,
+        "body": null,
+        "imageUrl": "https://example.com/banner.webp",
+        "cta": null,
+        "url": "lumen://challenges",
+        "extras": {},
+        "pinned": false,
+        "dismissible": true,
+        "categories": [],
+        "createdAt": "2026-11-09T14:00:00.000Z",
+        "expiresAt": null,
+        "viewed": false,
+        "clicked": false,
+        "dismissed": false,
+        "decisionId": null
+      }
+    ],
+    "inAppMessages": [
+      {
+        "id": "msg_2",
+        "type": "modal",
+        "priority": 10,
+        "trigger": {
+          "type": "event",
+          "event": "workout_completed",
+          "propertyFilters": [
+            {
+              "key": "minutes",
+              "op": "gt",
+              "value": 20
+            }
+          ]
+        },
+        "reEligibility": {
+          "mode": "once"
+        },
+        "expiresAt": null,
+        "content": {
+          "header": "Nice work, Maya",
+          "body": "That's 14 this month. Lumen Plus turns the habit into a guided plan.",
+          "imageUrl": null,
+          "buttons": [
+            {
+              "id": "b1",
+              "text": "See Plus",
+              "action": {
+                "type": "deeplink",
+                "value": "lumen://plus"
+              }
+            },
+            {
+              "id": "b2",
+              "text": "Not now",
+              "action": {
+                "type": "close",
+                "value": null
+              }
+            }
+          ],
+          "html": null,
+          "slideFrom": null,
+          "dismissAfterSeconds": null
+        },
+        "style": {
+          "backgroundColor": null,
+          "textColor": null,
+          "buttonColor": null,
+          "buttonTextColor": null,
+          "cornerRadius": null
+        },
+        "decisionId": "dec_2"
+      },
+      {
+        "id": "msg_5",
+        "type": "slideup",
+        "priority": 0,
+        "trigger": {
+          "type": "session_start"
+        },
+        "reEligibility": {
+          "mode": "after_hours",
+          "hours": 24
+        },
+        "expiresAt": null,
+        "content": {
+          "header": null,
+          "body": "Your weekly summary is ready.",
+          "imageUrl": null,
+          "buttons": [],
+          "html": null,
+          "slideFrom": "bottom",
+          "dismissAfterSeconds": 6
+        },
+        "style": {
+          "backgroundColor": "#101828",
+          "textColor": "#FFFFFF",
+          "buttonColor": null,
+          "buttonTextColor": null,
+          "cornerRadius": 12
+        },
+        "decisionId": null
+      },
+      {
+        "id": "msg_6",
+        "type": "html",
+        "priority": 5,
+        "trigger": {
+          "type": "push_open"
+        },
+        "reEligibility": {
+          "mode": "once"
+        },
+        "expiresAt": null,
+        "content": {
+          "header": null,
+          "body": null,
+          "imageUrl": null,
+          "buttons": [],
+          "html": "<main><h1>Challenge week</h1><button onclick=\"herald.click('join')\">Join</button><button onclick=\"herald.close()\">Close</button></main>",
+          "slideFrom": null,
+          "dismissAfterSeconds": null
+        },
+        "style": {
+          "backgroundColor": null,
+          "textColor": null,
+          "buttonColor": null,
+          "buttonTextColor": null,
+          "cornerRadius": null
+        },
+        "decisionId": null
+      },
+      {
+        "id": "msg_bad",
+        "type": "hologram",
+        "priority": 99,
+        "trigger": {
+          "type": "session_start"
+        },
+        "reEligibility": {
+          "mode": "once"
+        },
+        "expiresAt": null,
+        "content": {},
+        "style": {},
+        "decisionId": null
+      }
+    ]
+  }
+}
