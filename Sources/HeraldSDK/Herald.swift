@@ -19,7 +19,9 @@ public final class Herald: Sendable {
     /// The current user's content cards.
     public let contentCards: ContentCardStore
 
-    typealias Command = @Sendable (isolated HeraldCore) async -> Void
+    /// Synchronous on purpose: a command can never wait on the network, so every call is on disk
+    /// before the next one runs.
+    typealias Command = @Sendable (isolated HeraldCore) -> Void
 
     private let bridge: MainActorBridge
     private let commands: AsyncStream<Command>.Continuation
@@ -134,13 +136,14 @@ public final class Herald: Sendable {
         send { core in core.setAttributes(attributes) }
     }
 
-    public func setEmail(_ email: String) {
-        setAttributes(["$email": .string(email)])
+    /// A string must be a valid email; nil is sent as null.
+    public func setEmail(_ email: String?) {
+        setAttributes(["$email": email.map(HeraldValue.string) ?? .null])
     }
 
-    /// E.164 format, for example "+15551234567".
-    public func setPhone(_ phone: String) {
-        setAttributes(["$phone": .string(phone)])
+    /// E.164 format, for example "+15551234567"; nil is sent as null.
+    public func setPhone(_ phone: String?) {
+        setAttributes(["$phone": phone.map(HeraldValue.string) ?? .null])
     }
 
     public func setSubscription(_ channel: SubscriptionChannel, _ state: SubscriptionState) {
@@ -177,7 +180,7 @@ public final class Herald: Sendable {
     // MARK: - Push
 
     /// Asks for notification permission and, when granted, registers with APNs. Records the push
-    /// subscription state. Returns false on platforms without push.
+    /// subscription state (sent after the APNs token arrives). Returns false on platforms without push.
     public func requestPushAuthorization() async -> Bool {
         #if os(iOS)
         let granted: Bool
@@ -239,7 +242,7 @@ public final class Herald: Sendable {
 
     /// Fetches the latest cards and in-app messages now.
     public func refreshContentCards() {
-        send { core in await core.syncMessages() }
+        send { core in core.scheduleSync(thenFire: nil) }
     }
 
     public func logImpression(_ card: ContentCard) {
@@ -266,7 +269,10 @@ public final class Herald: Sendable {
     /// Draws in-app messages. `HeraldUI` sets its default presenter; messages are not shown while nil.
     @MainActor public var inAppMessagePresenter: InAppMessagePresenter? {
         get { bridge.presenter }
-        set { bridge.presenter = newValue }
+        set {
+            bridge.presenter = newValue
+            if newValue != nil { send { core in core.showPendingIfPossible() } }
+        }
     }
 
     /// Opens Herald deep links (push, card and message clicks). Return true when handled; when nil
@@ -276,7 +282,8 @@ public final class Herald: Sendable {
         set { bridge.deepLinkHandler = newValue }
     }
 
-    /// Shows the next message the delegate deferred with `.later`.
+    /// Shows the next pending message now (for example one the delegate deferred with `.later`),
+    /// skipping the minimum interval. Does nothing while another message is on screen.
     public func showNext() {
         send { core in core.showNext() }
     }
@@ -286,7 +293,7 @@ public final class Herald: Sendable {
         send { core in core.logMessageImpression(message) }
     }
 
-    /// A tap on the message body (`buttonId` nil) or on one of its buttons.
+    /// A tap on the message body (`buttonId` nil) or on one of its buttons (non-empty id).
     public func logClick(_ message: InAppMessage, buttonId: String? = nil) {
         send { core in core.logMessageClick(message, buttonId: buttonId) }
     }
@@ -345,8 +352,12 @@ enum LifecycleObserver {
             MainActor.assumeIsolated {
                 let task = BackgroundTask()
                 herald.send { core in
-                    await core.appDidEnterBackground()
-                    await task.end()
+                    let flush = core.appDidEnterBackground()
+                    // Hold the background assertion until the upload ends, outside the command stream.
+                    Task {
+                        await flush.value
+                        await task.end()
+                    }
                 }
             }
         })

@@ -17,15 +17,46 @@ struct PersistedState: Codable, Equatable {
     var dropped: Int = 0
     var enabled: Bool = true
     var session: SessionState?
-    /// In-app re-eligibility: user key ("" when anonymous) → message id → last shown.
+    /// In-app re-eligibility: user id (or "anonymous") → message id → last shown. Survives reset and
+    /// user switches; only `wipeData()` clears it.
     var lastShown: [String: [String: Date]] = [:]
+    /// When the last in-app message was displayed: the minimum-interval clock.
+    var lastDisplayAt: Date?
+    /// Triggered in-app messages that could not show yet, oldest first.
+    var pendingMessageIds: [String] = []
     /// Cards dismissed on this device that the server may not have seen yet.
     var dismissedCardIds: Set<String> = []
     var messagesETag: String?
     var pushToken: String?
+    /// A push subscription change recorded before any APNs token existed; sent right after the token.
+    var deferredPushSubscription: SubscriptionState?
 
     init(deviceId: String) {
         self.deviceId = deviceId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case deviceId, userId, userToken, pendingTokens, dropped, enabled, session, lastShown, lastDisplayAt
+        case pendingMessageIds, dismissedCardIds, messagesETag, pushToken, deferredPushSubscription
+    }
+
+    /// Every field but the device id is optional, so state written by an older SDK version still loads.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        deviceId = try c.decode(String.self, forKey: .deviceId)
+        userId = c.lenient(String.self, .userId)
+        userToken = c.lenient(String.self, .userToken)
+        pendingTokens = c.lenient([String: String].self, .pendingTokens) ?? [:]
+        dropped = c.lenient(Int.self, .dropped) ?? 0
+        enabled = c.lenient(Bool.self, .enabled) ?? true
+        session = c.lenient(SessionState.self, .session)
+        lastShown = c.lenient([String: [String: Date]].self, .lastShown) ?? [:]
+        lastDisplayAt = c.lenient(Date.self, .lastDisplayAt)
+        pendingMessageIds = c.lenient([String].self, .pendingMessageIds) ?? []
+        dismissedCardIds = c.lenient(Set<String>.self, .dismissedCardIds) ?? []
+        messagesETag = c.lenient(String.self, .messagesETag)
+        pushToken = c.lenient(String.self, .pushToken)
+        deferredPushSubscription = c.lenient(SubscriptionState.self, .deferredPushSubscription)
     }
 }
 

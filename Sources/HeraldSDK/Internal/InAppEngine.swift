@@ -21,12 +21,36 @@ struct InAppEngine {
         self.minimumInterval = minimumInterval
     }
 
+    /// The message to show for this trigger right now, or nil (nothing matches, or one cannot show yet).
     func evaluate(trigger: TriggerEvent, now: Date) -> InAppMessage? {
-        guard !isShowing else { return nil }
-        if let lastDisplayAt, now.timeIntervalSince(lastDisplayAt) < minimumInterval { return nil }
+        canShow(now: now) ? candidate(for: trigger, now: now) : nil
+    }
+
+    /// The highest-priority eligible message matching the trigger, ignoring what is on screen.
+    func candidate(for trigger: TriggerEvent, now: Date) -> InAppMessage? {
+        best(of: messages.filter { isEligible($0, now: now) && Self.matches($0.trigger, trigger) })
+    }
+
+    /// The highest-priority eligible message among pending ids.
+    func nextPending(_ ids: [String], now: Date) -> InAppMessage? {
+        best(of: messages.filter { ids.contains($0.id) && isEligible($0, now: now) })
+    }
+
+    /// Nothing on screen and the minimum interval has passed.
+    func canShow(now: Date) -> Bool {
+        guard !isShowing else { return false }
+        return intervalRemaining(now: now) <= 0
+    }
+
+    func intervalRemaining(now: Date) -> TimeInterval {
+        guard let lastDisplayAt else { return 0 }
+        return minimumInterval - now.timeIntervalSince(lastDisplayAt)
+    }
+
+    private func best(of candidates: [InAppMessage]) -> InAppMessage? {
         var best: InAppMessage?
-        for message in messages where isEligible(message, now: now) && Self.matches(message.trigger, trigger) {
-            if best == nil || message.priority > (best?.priority ?? .min) { best = message }
+        for message in candidates where best == nil || message.priority > (best?.priority ?? .min) {
+            best = message
         }
         return best
     }
@@ -58,10 +82,8 @@ struct InAppEngine {
 
     static func matches(_ filter: PropertyFilter, _ properties: [String: HeraldValue]) -> Bool {
         let actual = properties[filter.key]
-        guard let actual, actual != .null else {
-            // A missing property only satisfies "not equal".
-            return filter.op == .neq && filter.value != .null
-        }
+        // A missing (or null) property fails every operator, `exists` included.
+        guard let actual, actual != .null else { return false }
         switch filter.op {
         case .exists: return true
         case .eq: return actual == filter.value

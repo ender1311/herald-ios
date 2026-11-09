@@ -31,12 +31,27 @@ final class WireFormatTests: XCTestCase {
         let bodies = try harness.transport.batchBodies()
         XCTAssertEqual(bodies.count, 1)
         var actual = try XCTUnwrap(bodies.first?.objectValue)
-        let expected = try XCTUnwrap(fixtureJSON("batch-full").objectValue)
+        var expected = try XCTUnwrap(fixtureJSON("batch-full").objectValue)
 
-        XCTAssertEqual(shape(.object(actual)), shape(.object(expected)), "same keys and value types at every level")
+        // Ruling (f): the push_token must precede the push subscription in a batch. The fixture lists the
+        // subscription first, so swap those two in the expected document and compare events without ids
+        // (ids are checked separately).
+        var expectedEvents = try XCTUnwrap(expected["events"]?.arrayValue)
+        XCTAssertEqual(expectedEvents[6].objectValue?["type"], "subscription")
+        XCTAssertEqual(expectedEvents[7].objectValue?["type"], "push_token")
+        expectedEvents.swapAt(6, 7)
+        let withoutIds = { (events: [HeraldValue]) -> HeraldValue in
+            .array(events.map { event in
+                var object = event.objectValue ?? [:]
+                object["id"] = nil
+                return .object(object)
+            })
+        }
+        expected["events"] = withoutIds(expectedEvents)
 
-        // session_end is recorded when the session's last activity happened (412 s in), unlike the fixture's flat timestamps.
         var events = try XCTUnwrap(actual["events"]?.arrayValue)
+        XCTAssertEqual(events.compactMap { $0.objectValue?["id"]?.stringValue }, (1...10).map { String(format: "0b8f3c2e-0000-4000-8000-%012d", $0) })
+        // session_end is recorded when the session's last activity happened (412 s in), unlike the fixture's flat timestamps.
         var last = try XCTUnwrap(events.last?.objectValue)
         XCTAssertEqual(last["timestamp"], "2026-11-09T14:06:52.000Z")
         last["timestamp"] = "2026-11-09T14:00:00.000Z"
@@ -49,7 +64,8 @@ final class WireFormatTests: XCTestCase {
             object["sessionId"] = "1762696800000"
             return .object(object)
         }
-        actual["events"] = .array(events)
+        actual["events"] = withoutIds(events)
+        XCTAssertEqual(shape(.object(actual)), shape(.object(expected)), "same keys and value types at every level")
         for key in expected.keys.sorted() {
             XCTAssertEqual(actual[key], expected[key], "batch.\(key)")
         }
@@ -148,11 +164,60 @@ final class WireFormatTests: XCTestCase {
     }
 
     func testAttributeValidation() {
-        let valid = HeraldCore.validAttributes([
-            "ok": "x", "n": 1, "list": ["a", "b"], "nested": ["a": 1], "mixed": ["a", 1],
-            "$custom": "x", "$email": "not-an-email", "$phone": "+15551234567", "": "empty",
-        ])
-        XCTAssertEqual(Set(valid.keys), ["ok", "n", "list", "$phone"])
+        XCTAssertNil(Validation.attributes("a", [
+            "ok": "x", "n": 1, "list": ["a", "b"], "none": nil, "$custom": "x",
+            "$email": "maya@example.com", "$phone": "+15551234567",
+        ]))
+        XCTAssertNil(Validation.attributes("a", ["$email": nil, "$phone": nil]), "null is allowed; the server skips it")
+        XCTAssertNotNil(Validation.attributes("a", ["nested": ["a": 1]]))
+        XCTAssertNotNil(Validation.attributes("a", ["mixed": ["a", 1]]))
+        XCTAssertNotNil(Validation.attributes("a", ["": "empty"]))
+        XCTAssertNotNil(Validation.attributes("a", ["n": .number(.nan)]))
+        XCTAssertNotNil(Validation.attributes("a", ["$email": "not-an-email"]))
+        XCTAssertNotNil(Validation.attributes("a", ["$email": "a..b@example.com"]), "Zod rejects consecutive dots")
+        XCTAssertNotNil(Validation.attributes("a", ["$phone": "5551234567"]))
+        XCTAssertNotNil(Validation.attributes("a", [String(repeating: "k", count: 256): 1]))
+    }
+
+    func testLengthsCountUTF16LikeTheServer() {
+        let emoji = String(repeating: "\u{1F600}", count: 128)  // 128 characters, 256 UTF-16 units
+        XCTAssertEqual(emoji.count, 128)
+        XCTAssertNotNil(Validation.length("name", emoji, max: 255))
+        XCTAssertNil(Validation.length("name", String(repeating: "\u{1F600}", count: 127), max: 255))
+        XCTAssertEqual(Validation.truncated(emoji, 5).utf16.count, 4, "never splits a surrogate pair")
+    }
+
+    func testContextIsTruncatedToServerLimits() {
+        var info = DeviceInfo(
+            appName: String(repeating: "n", count: 300), appVersion: String(repeating: "v", count: 70), appBuild: "1",
+            appNamespace: "a", osName: "iOS", osVersion: "18", region: "TOOLONGREGION", manufacturer: "Apple",
+            model: String(repeating: "m", count: 200), deviceType: "phone"
+        )
+        info.timezone = String(repeating: "t", count: 80)
+        let context = DeviceContext.build(info, collection: .standard).objectValue ?? [:]
+        XCTAssertEqual(context["app"]?.objectValue?["name"]?.stringValue?.count, 255)
+        XCTAssertEqual(context["app"]?.objectValue?["version"]?.stringValue?.count, 64)
+        XCTAssertEqual(context["region"]?.stringValue?.count, 8)
+        XCTAssertEqual(context["device"]?.objectValue?["model"]?.stringValue?.count, 128)
+        XCTAssertEqual(context["timezone"]?.stringValue?.count, 64)
+    }
+
+    func testPushTokensMoveAheadOfPushSubscriptions() {
+        func e(_ id: String, _ fields: [String: HeraldValue]) -> QueuedEvent {
+            var event = fields
+            event["id"] = .string(id)
+            return QueuedEvent(userId: nil, event: event)
+        }
+        let batch = [
+            e("1", ["type": "track"]),
+            e("2", ["type": "subscription", "channel": "email"]),
+            e("3", ["type": "subscription", "channel": "push"]),
+            e("4", ["type": "track"]),
+            e("5", ["type": "push_token"]),
+        ]
+        XCTAssertEqual(HeraldCore.pushTokensFirst(batch).map(\.id), ["1", "2", "5", "3", "4"])
+        let ordered = [e("1", ["type": "push_token"]), e("2", ["type": "subscription", "channel": "push"])]
+        XCTAssertEqual(HeraldCore.pushTokensFirst(ordered).map(\.id), ["1", "2"])
     }
 
     func testValueEncodingKeepsIntegers() throws {

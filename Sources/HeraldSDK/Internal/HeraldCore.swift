@@ -8,12 +8,14 @@ protocol CoreOutput: Sendable {
         -> InAppMessageDisplayChoice?
 }
 
-/// All SDK state lives here. Public calls reach it in order through `Herald`'s command stream;
-/// network work runs in child tasks so a slow request never blocks event recording.
+/// All SDK state lives here. Public calls reach it in order through `Herald`'s command stream and are
+/// written to disk before the call returns; network work (flush, sync) and main-actor hops run in
+/// child tasks, so recording never waits on them.
 actor HeraldCore {
     static let sdkName = "herald-ios"
     static let maxBatchEvents = 100
     static let maxBatchBytes = 512 * 1024
+    static let anonymousKey = "anonymous"
 
     let configuration: HeraldConfiguration
     private let storage: Storage
@@ -29,15 +31,18 @@ actor HeraldCore {
     var queuedCount: Int { queue.count }
     private(set) var engine: InAppEngine
     private(set) var cards: [ContentCard] = []
-    private var heldMessages: [InAppMessage] = []
+    /// Id of the in-app message on screen (or being offered), so a stale `onClose` cannot free the slot.
+    private(set) var showingId: String?
 
-    private var isFlushing = false
+    private var currentFlush: Task<Void, Never>?
     private var isSyncing = false
     private var resyncRequested = false
     private(set) var failureCount = 0
     private(set) var nextAttemptAt: Date?
-    private var isForeground = false
+    private(set) var isForeground = false
     private var flushTimer: Task<Void, Never>?
+    private var intervalRetry: Task<Void, Never>?
+    private var activityPersistedAt: Date?
     private let bundleId: String
     /// Child tasks (flush, sync, output), tracked so tests can wait for them.
     private var inFlight: [UUID: Task<Void, Never>] = [:]
@@ -65,7 +70,8 @@ actor HeraldCore {
         state = storage.loadState() ?? PersistedState(deviceId: UUID().uuidString.lowercased())
         queue = EventQueue(fileURL: storage.queueURL)
         engine = InAppEngine(minimumInterval: configuration.inAppMinimumInterval)
-        engine.lastShown = state.lastShown[state.userId ?? ""] ?? [:]
+        engine.lastShown = state.lastShown[state.userId ?? Self.anonymousKey] ?? [:]
+        engine.lastDisplayAt = state.lastDisplayAt
         if let cached = storage.loadMessages(), let payload = try? MessagesPayload.decode(cached) {
             cards = payload.contentCards
             engine.messages = payload.inAppMessages
@@ -78,14 +84,21 @@ actor HeraldCore {
         await output.cardsChanged(visibleCards())
     }
 
+    private var userKey: String { state.userId ?? Self.anonymousKey }
+
+    /// Logs and returns true when a call fails validation; such calls are never queued.
+    private func rejected(_ call: String, _ problem: String?) -> Bool {
+        guard let problem else { return false }
+        Log.error("\(call) ignored: \(problem)")
+        return true
+    }
+
     // MARK: - Identity
 
     func identify(userId: String, traits: [String: HeraldValue]) {
         guard state.enabled else { return }
-        guard !userId.isEmpty, userId.count <= 200 else {
-            Log.error("identify: userId must be 1 to 200 characters")
-            return
-        }
+        if rejected("identify", Validation.length("userId", userId, max: Validation.maxUserId)
+            ?? Validation.attributes("traits", traits)) { return }
         let previous = state.userId
         if let previous, previous != userId {
             clearUserState()
@@ -93,7 +106,7 @@ actor HeraldCore {
         state.userId = userId
         engine.lastShown = state.lastShown[userId] ?? [:]
         persist()
-        record("identify", ["userId": .string(userId), "traits": .object(Self.validAttributes(traits))])
+        record("identify", ["userId": .string(userId), "traits": .object(traits)])
         if previous == nil {
             // Same session, now identified: fetch this user's messages.
             scheduleSync(thenFire: nil)
@@ -110,14 +123,15 @@ actor HeraldCore {
     func reset() {
         clearUserState()
         state.userId = nil
-        engine.lastShown = state.lastShown[""] ?? [:]
+        engine.lastShown = state.lastShown[Self.anonymousKey] ?? [:]
         persist()
         guard state.enabled else { return }
         ensureSession()
         resendPushToken()
     }
 
-    /// Ends the session and forgets the current user's token, cards, messages and re-eligibility.
+    /// Ends the session and forgets the current user's token, cards, messages and pending messages.
+    /// In-app history (re-eligibility) is kept per user; only `wipeData()` clears it.
     private func clearUserState() {
         if let session = state.session {
             if state.enabled { enqueueSessionEnd(session) }
@@ -127,37 +141,40 @@ actor HeraldCore {
             state.pendingTokens[userId] = token
         }
         state.userToken = nil
-        state.lastShown[state.userId ?? ""] = nil
         state.dismissedCardIds = []
         state.messagesETag = nil
+        state.pendingMessageIds = []
         storage.saveMessages(nil)
         cards = []
         engine.messages = []
-        engine.lastShown = [:]
-        heldMessages = []
         publishCards()
     }
 
     // MARK: - Events
 
     func track(_ name: String, properties: [String: HeraldValue]) {
-        guard state.enabled, Self.validName(name, "track") else { return }
+        guard state.enabled else { return }
+        if rejected("track", Validation.length("name", name, max: Validation.maxName)
+            ?? Validation.properties("properties", properties)) { return }
         record("track", ["name": .string(name), "properties": .object(properties)])
         fire(.event(name: name, properties: properties))
     }
 
     func screen(_ name: String, properties: [String: HeraldValue]) {
-        guard state.enabled, Self.validName(name, "screen") else { return }
+        guard state.enabled else { return }
+        if rejected("screen", Validation.length("name", name, max: Validation.maxName)
+            ?? Validation.properties("properties", properties)) { return }
         record("screen", ["name": .string(name), "properties": .object(properties)])
     }
 
     func trackPurchase(productId: String, price: Double, currency: String, quantity: Int, properties: [String: HeraldValue]) {
-        guard state.enabled, Self.validName(productId, "trackPurchase") else { return }
+        guard state.enabled else { return }
         let code = currency.uppercased()
-        guard code.count == 3, quantity > 0, price.isFinite else {
-            Log.error("trackPurchase: currency must be a 3-letter code, quantity positive and price finite")
-            return
-        }
+        var problem = Validation.length("productId", productId, max: Validation.maxName)
+        if code.utf16.count != 3 { problem = problem ?? "currency must be a 3-letter ISO 4217 code" }
+        if quantity <= 0 { problem = problem ?? "quantity must be positive" }
+        if !price.isFinite { problem = problem ?? "price must be finite" }
+        if rejected("trackPurchase", problem ?? Validation.properties("properties", properties)) { return }
         record("purchase", [
             "productId": .string(productId), "price": .number(price), "currency": .string(code),
             "quantity": .number(Double(quantity)), "properties": .object(properties),
@@ -165,22 +182,34 @@ actor HeraldCore {
     }
 
     func setAttributes(_ attributes: [String: HeraldValue]) {
-        guard state.enabled else { return }
-        let valid = Self.validAttributes(attributes)
-        guard !valid.isEmpty else { return }
-        record("attributes", ["attributes": .object(valid)])
+        guard state.enabled, !attributes.isEmpty else { return }
+        if rejected("setAttributes", Validation.attributes("attribute", attributes)) { return }
+        record("attributes", ["attributes": .object(attributes)])
     }
 
+    /// Push subscription changes made before any APNs token exists wait for the token, so the server
+    /// always sees the device's push_token before its push subscription.
     func setSubscription(_ channel: SubscriptionChannel, _ subscriptionState: SubscriptionState) {
         guard state.enabled else { return }
+        if channel == .push, state.pushToken == nil {
+            state.deferredPushSubscription = subscriptionState
+            persist()
+            return
+        }
         record("subscription", ["channel": .string(channel.rawValue), "state": .string(subscriptionState.rawValue)])
     }
 
     func setPushToken(hex: String) {
+        guard !rejected("setPushToken", Validation.length("token", hex, max: Validation.maxPushToken)) else { return }
         state.pushToken = hex
         persist()
         guard state.enabled else { return }
         enqueuePushToken(hex)
+        if let deferred = state.deferredPushSubscription {
+            state.deferredPushSubscription = nil
+            persist()
+            setSubscription(.push, deferred)
+        }
     }
 
     private func resendPushToken() {
@@ -192,34 +221,38 @@ actor HeraldCore {
         var fields: [String: HeraldValue] = [
             "platform": "apns", "token": .string(token), "environment": .string(PushEnvironment.current),
         ]
-        if !bundleId.isEmpty { fields["bundleId"] = .string(bundleId) }
+        if !bundleId.isEmpty { fields["bundleId"] = .string(Validation.truncated(bundleId, Validation.maxName)) }
         record("push_token", fields)
     }
 
     /// The user acted on a Herald push (`open`, `button` or `dismiss`). Opens evaluate `push_open` triggers.
     func pushResponse(messageId: String, decisionId: String?, action: String, buttonId: String?) {
         guard state.enabled else { return }
-        logInteraction(messageId: messageId, kind: "push", action: action, decisionId: decisionId, buttonId: buttonId)
+        guard logInteraction(messageId: messageId, kind: "push", action: action, decisionId: decisionId, buttonId: buttonId)
+        else { return }
         if action != "dismiss" { fire(.pushOpen) }
     }
 
     // MARK: - Content cards
 
     func logCardImpression(_ card: ContentCard) {
+        guard logInteraction(messageId: card.id, kind: "content_card", action: "impression", decisionId: card.decisionId)
+        else { return }
         updateCard(card.id) { $0.viewed = true }
-        logInteraction(messageId: card.id, kind: "content_card", action: "impression", decisionId: card.decisionId, buttonId: nil)
     }
 
     func logCardClick(_ card: ContentCard) {
+        guard logInteraction(messageId: card.id, kind: "content_card", action: "click", decisionId: card.decisionId)
+        else { return }
         updateCard(card.id) { $0.clicked = true }
-        logInteraction(messageId: card.id, kind: "content_card", action: "click", decisionId: card.decisionId, buttonId: nil)
     }
 
     func logCardDismissal(_ card: ContentCard) {
+        guard logInteraction(messageId: card.id, kind: "content_card", action: "dismiss", decisionId: card.decisionId)
+        else { return }
         state.dismissedCardIds.insert(card.id)
         persist()
         updateCard(card.id) { $0.dismissed = true }
-        logInteraction(messageId: card.id, kind: "content_card", action: "dismiss", decisionId: card.decisionId, buttonId: nil)
     }
 
     private func updateCard(_ id: String, _ change: (inout ContentCard) -> Void) {
@@ -241,7 +274,7 @@ actor HeraldCore {
     // MARK: - In-app messages
 
     func logMessageImpression(_ message: InAppMessage) {
-        logInteraction(messageId: message.id, kind: "in_app", action: "impression", decisionId: message.decisionId, buttonId: nil)
+        logInteraction(messageId: message.id, kind: "in_app", action: "impression", decisionId: message.decisionId)
     }
 
     func logMessageClick(_ message: InAppMessage, buttonId: String?) {
@@ -252,63 +285,124 @@ actor HeraldCore {
     }
 
     func logMessageDismissal(_ message: InAppMessage) {
-        logInteraction(messageId: message.id, kind: "in_app", action: "dismiss", decisionId: message.decisionId, buttonId: nil)
+        logInteraction(messageId: message.id, kind: "in_app", action: "dismiss", decisionId: message.decisionId)
     }
 
-    /// Evaluates a trigger and, when a message wins, offers it to the delegate and presenter.
+    /// Evaluates a trigger. The winning message joins the pending list and shows as soon as nothing
+    /// else is on screen, the minimum interval has passed, the app is active and a presenter exists.
     func fire(_ trigger: TriggerEvent) {
-        guard state.enabled, let message = engine.evaluate(trigger: trigger, now: now()) else { return }
-        engine.isShowing = true  // reserved until the presenter answers, so a second trigger cannot overlap
-        spawn { core in await core.offer(message) }
+        guard state.enabled, let message = engine.candidate(for: trigger, now: now()) else { return }
+        if !state.pendingMessageIds.contains(message.id) {
+            state.pendingMessageIds.append(message.id)
+            persist()
+        }
+        showPendingIfPossible()
     }
 
-    /// Shows the next message the delegate held with `.later`.
+    /// Shows the next pending message (including ones the delegate deferred with `.later`), ignoring
+    /// the minimum interval.
     func showNext() {
-        guard state.enabled, !engine.isShowing else { return }
+        showPendingIfPossible(ignoringInterval: true)
+    }
+
+    /// Offers the highest-priority pending message when one may show now; otherwise keeps it pending.
+    /// Called on triggers, `appDidBecomeActive`, after a message closes, when a presenter is set, and
+    /// when the minimum interval runs out.
+    func showPendingIfPossible(ignoringInterval: Bool = false) {
+        guard state.enabled, isForeground, showingId == nil else { return }
         let date = now()
-        heldMessages.removeAll { message in !engine.messages.contains { $0.id == message.id } || !engine.isEligible(message, now: date) }
-        guard !heldMessages.isEmpty else { return }
-        let message = heldMessages.removeFirst()
+        let before = state.pendingMessageIds
+        // Drop ids that are gone, expired or no longer eligible for this user.
+        state.pendingMessageIds.removeAll { id in
+            guard let message = engine.messages.first(where: { $0.id == id }) else { return true }
+            return !engine.isEligible(message, now: date)
+        }
+        if state.pendingMessageIds != before { persist() }
+        guard let message = engine.nextPending(state.pendingMessageIds, now: date) else { return }
+        let remaining = engine.intervalRemaining(now: date)
+        if !ignoringInterval, remaining > 0 {
+            scheduleIntervalRetry(after: remaining)
+            return
+        }
+        showingId = message.id
         engine.isShowing = true
         spawn { core in await core.offer(message) }
     }
 
+    private func scheduleIntervalRetry(after seconds: TimeInterval) {
+        intervalRetry?.cancel()
+        // Not tracked by `drain()`: it sleeps in real time.
+        intervalRetry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(seconds, 0.1) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.showPendingIfPossible()
+        }
+    }
+
     private func offer(_ message: InAppMessage) async {
+        let user = userKey
         let messageId = message.id
         let choice = await output.offer(message) { [weak self] in
             Task { await self?.messageClosed(id: messageId) }
         }
+        // reset(), identify or wipeData() may have run while the main actor decided.
+        let sameUser = user == userKey && showingId == messageId
         switch choice {
         case .display:
-            engine.recordDisplay(message, now: now())
-            state.lastShown[state.userId ?? "", default: [:]][message.id] = now()
+            // On screen now; the slot stays taken until onClose.
+            guard sameUser else { return }
+            let date = now()
+            engine.recordDisplay(message, now: date)
+            state.lastShown[user, default: [:]][messageId] = date
+            state.lastDisplayAt = date
+            state.pendingMessageIds.removeAll { $0 == messageId }
             persist()
             logMessageImpression(message)
-        case .later:
-            engine.isShowing = false
-            if !heldMessages.contains(where: { $0.id == message.id }) { heldMessages.append(message) }
         case .discard:
-            engine.isShowing = false
-        case nil:
-            engine.isShowing = false
-            Log.info("No in-app presenter set; message \(message.id) not shown")
+            releaseSlot(messageId)
+            state.pendingMessageIds.removeAll { $0 == messageId }
+            persist()
+        case .later, nil:
+            // Stays pending; retried on the next trigger, activation, close, presenter change or showNext().
+            if choice == nil { Log.info("No in-app presenter set; message \(messageId) stays pending") }
+            releaseSlot(messageId)
         }
     }
 
-    func messageClosed(id: String) {
+    private func releaseSlot(_ id: String) {
+        guard showingId == id else { return }
+        showingId = nil
         engine.isShowing = false
+    }
+
+    func messageClosed(id: String) {
+        guard showingId == id else { return }
+        releaseSlot(id)
+        showPendingIfPossible()
     }
 
     // MARK: - Recording
 
-    private func logInteraction(messageId: String, kind: String, action: String, decisionId: String?, buttonId: String?) {
-        guard state.enabled, !messageId.isEmpty else { return }
+    /// Queues an interaction; returns false when the SDK is disabled or the ids break server limits.
+    @discardableResult
+    private func logInteraction(
+        messageId: String, kind: String, action: String, decisionId: String?, buttonId: String? = nil
+    ) -> Bool {
+        guard state.enabled else { return false }
+        let decisionId = decisionId?.isEmpty == true ? nil : decisionId
+        var problem = Validation.length("messageId", messageId, max: Validation.maxMessageId)
+        if let decisionId { problem = problem ?? Validation.length("decisionId", decisionId, max: Validation.maxMessageId) }
+        if action == "button" {
+            problem = problem ?? Validation.length("buttonId", buttonId ?? "", max: Validation.maxMessageId)
+        }
+        if rejected("Interaction \(kind) \(action)", problem) { return false }
         var fields: [String: HeraldValue] = [
             "messageId": .string(messageId), "kind": .string(kind), "action": .string(action),
         ]
         if let decisionId { fields["decisionId"] = .string(decisionId) }
-        if let buttonId { fields["buttonId"] = .string(buttonId) }
+        if action == "button", let buttonId { fields["buttonId"] = .string(buttonId) }
         record("interaction", fields)
+        return true
     }
 
     /// Records an event in the current session, starting a new session first if needed.
@@ -341,13 +435,19 @@ actor HeraldCore {
             if date.timeIntervalSince(session.lastActivityAt) < configuration.sessionTimeout {
                 session.lastActivityAt = date
                 state.session = session
-                persist()
+                // Activity is persisted at most once a minute (and on background); a crash costs at most
+                // a minute of session duration.
+                if activityPersistedAt.map({ date.timeIntervalSince($0) >= 60 }) ?? true {
+                    activityPersistedAt = date
+                    persist()
+                }
                 return
             }
             enqueueSessionEnd(session)
         }
         let session = SessionState(id: String(Int64(date.timeIntervalSince1970 * 1000)), startedAt: date, lastActivityAt: date)
         state.session = session
+        activityPersistedAt = date
         persist()
         enqueue("session_start", [:])
         scheduleSync(thenFire: .sessionStart)
@@ -373,18 +473,23 @@ actor HeraldCore {
         guard state.enabled else { return }
         ensureSession()
         startFlushTimer()
+        showPendingIfPossible()
     }
 
-    func appDidEnterBackground() async {
+    /// Persists session activity and starts (or joins) a flush. Returns the flush task so the caller can
+    /// hold its background-task assertion until the upload really finishes, without blocking recording.
+    func appDidEnterBackground() -> Task<Void, Never> {
         isForeground = false
         flushTimer?.cancel()
         flushTimer = nil
+        intervalRetry?.cancel()
         if var session = state.session {
             session.lastActivityAt = now()
             state.session = session
+            activityPersistedAt = session.lastActivityAt
             persist()
         }
-        await flushNow()
+        return startFlush()
     }
 
     private func startFlushTimer() {
@@ -394,7 +499,7 @@ actor HeraldCore {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(max(interval, 1) * 1_000_000_000))
                 if Task.isCancelled { return }
-                await self?.flushNow()
+                await self?.scheduleFlush()
             }
         }
     }
@@ -419,11 +524,12 @@ actor HeraldCore {
         flushTimer = nil
         queue.removeAll()
         storage.wipe()
+        intervalRetry?.cancel()
         state = PersistedState(deviceId: UUID().uuidString.lowercased())
         state.enabled = false
         cards = []
         engine = InAppEngine(minimumInterval: configuration.inAppMinimumInterval)
-        heldMessages = []
+        showingId = nil
         failureCount = 0
         nextAttemptAt = nil
         persist()
@@ -432,13 +538,16 @@ actor HeraldCore {
 
     private func persist() { storage.saveState(state) }
 
-    private func spawn(_ work: @escaping @Sendable (isolated HeraldCore) async -> Void) {
+    @discardableResult
+    private func spawn(_ work: @escaping @Sendable (isolated HeraldCore) async -> Void) -> Task<Void, Never> {
         let id = UUID()
         // The task runs on this actor only after the current call returns, so the entry exists before removal.
-        inFlight[id] = Task {
+        let task = Task {
             await work(self)
             self.inFlight[id] = nil
         }
+        inFlight[id] = task
+        return task
     }
 
     /// Waits until every child task (and any task they started) has finished.
@@ -451,15 +560,30 @@ actor HeraldCore {
     // MARK: - Flush
 
     func scheduleFlush() {
-        spawn { core in await core.flushNow() }
+        startFlush()
+    }
+
+    /// The running flush, or a new one. Only one flush runs at a time.
+    @discardableResult
+    func startFlush() -> Task<Void, Never> {
+        if let currentFlush { return currentFlush }
+        let task = spawn { core in
+            await core.runFlush()
+            core.currentFlush = nil
+        }
+        currentFlush = task
+        return task
+    }
+
+    /// Flushes and waits for it (tests and internal callers only; public calls never wait).
+    func flushNow() async {
+        await startFlush().value
     }
 
     /// Sends queued events in batches until the queue is empty, a batch must be retried, or the SDK is disabled.
-    func flushNow() async {
-        guard state.enabled, !isFlushing else { return }
+    private func runFlush() async {
+        guard state.enabled else { return }
         if let nextAttemptAt, now() < nextAttemptAt { return }
-        isFlushing = true
-        defer { isFlushing = false }
 
         while state.enabled, !queue.entries.isEmpty {
             let (batch, userId) = nextBatch()
@@ -530,7 +654,20 @@ actor HeraldCore {
             }
             batch.append(entry)
         }
-        return (batch, batchUser)
+        return (Self.pushTokensFirst(batch), batchUser)
+    }
+
+    /// Moves each push_token ahead of the batch's first push subscription event, keeping the order
+    /// otherwise, so the server registers the token before it applies the push subscription.
+    static func pushTokensFirst(_ batch: [QueuedEvent]) -> [QueuedEvent] {
+        let isPushSubscription = { (e: QueuedEvent) in e.event["type"] == "subscription" && e.event["channel"] == "push" }
+        guard let first = batch.firstIndex(where: isPushSubscription) else { return batch }
+        let lateTokens = batch[first...].filter { $0.event["type"] == "push_token" }
+        guard !lateTokens.isEmpty else { return batch }
+        var result = Array(batch[..<first])
+        result.append(contentsOf: lateTokens)
+        result.append(contentsOf: batch[first...].filter { $0.event["type"] != "push_token" })
+        return result
     }
 
     /// Encodes the batch, halving it until it fits 512 KB. Returns the body and the events it holds
@@ -581,7 +718,7 @@ actor HeraldCore {
 
     // MARK: - Message sync
 
-    private func scheduleSync(thenFire trigger: TriggerEvent?) {
+    func scheduleSync(thenFire trigger: TriggerEvent?) {
         spawn { core in
             await core.syncMessages()
             if let trigger { core.fire(trigger) }
@@ -640,64 +777,5 @@ actor HeraldCore {
         let ids = Set(cards.map(\.id))
         state.dismissedCardIds = state.dismissedCardIds.filter { ids.contains($0) }
         publishCards()
-    }
-
-    // MARK: - Validation
-
-    private static func validName(_ name: String, _ call: String) -> Bool {
-        guard !name.isEmpty, name.count <= 255 else {
-            Log.error("\(call): name must be 1 to 255 characters")
-            return false
-        }
-        return true
-    }
-
-    static let reservedAttributes: Set<String> = ["$email", "$phone"]
-
-    /// Keeps attributes the server accepts: keys 1–255 chars, values string, number, bool, null or
-    /// string array; `$` keys only for the reserved `$email` / `$phone`, which must look valid,
-    /// because one invalid attribute makes the server reject the whole batch.
-    static func validAttributes(_ attributes: [String: HeraldValue]) -> [String: HeraldValue] {
-        var valid: [String: HeraldValue] = [:]
-        for (key, value) in attributes {
-            guard !key.isEmpty, key.count <= 255 else {
-                Log.error("Attribute key must be 1 to 255 characters; skipped")
-                continue
-            }
-            if key.hasPrefix("$"), !reservedAttributes.contains(key), !internalAttributes.contains(key) {
-                Log.error("Attribute \(key): keys starting with $ are reserved; skipped")
-                continue
-            }
-            switch value {
-            case .string, .number, .bool, .null: break
-            case .array(let items) where items.allSatisfy({ $0.stringValue != nil }): break
-            default:
-                Log.error("Attribute \(key): values must be string, number, bool, null or an array of strings; skipped")
-                continue
-            }
-            if key == "$email", !isValidEmail(value.stringValue) {
-                Log.error("Attribute $email is not a valid email; skipped")
-                continue
-            }
-            if key == "$phone", !isValidPhone(value.stringValue) {
-                Log.error("Attribute $phone must be an E.164 number such as +15551234567; skipped")
-                continue
-            }
-            valid[key] = value
-        }
-        return valid
-    }
-
-    /// Location attributes written by `setLocation`.
-    static let internalAttributes: Set<String> = ["$latitude", "$longitude"]
-
-    static func isValidEmail(_ value: String?) -> Bool {
-        guard let value = value?.trimmingCharacters(in: .whitespaces) else { return false }
-        return value.range(of: #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#, options: .regularExpression) != nil
-    }
-
-    static func isValidPhone(_ value: String?) -> Bool {
-        guard let value else { return false }
-        return value.range(of: #"^\+[1-9][0-9]{6,14}$"#, options: .regularExpression) != nil
     }
 }

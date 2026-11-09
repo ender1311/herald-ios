@@ -31,13 +31,38 @@ struct DeviceInfo: Sendable, Equatable {
     var pushAuthorization: String?
 }
 
+extension DeviceInfo {
+    /// Cuts strings to the server's context maxima so one odd bundle value cannot fail every batch.
+    func truncatedToServerLimits() -> DeviceInfo {
+        let t = Validation.truncated
+        var info = self
+        info.appName = t(appName, 255)
+        info.appVersion = t(appVersion, 64)
+        info.appBuild = t(appBuild, 64)
+        info.appNamespace = t(appNamespace, 255)
+        info.osName = osName.isEmpty ? "unknown" : t(osName, 64)
+        info.osVersion = t(osVersion, 64)
+        info.region = region.map { t($0, 8) }
+        info.manufacturer = t(manufacturer, 128)
+        info.model = t(model, 128)
+        info.deviceType = t(deviceType, 32)
+        info.locale = locale.map { t($0, 64) }
+        info.language = language.map { t($0, 32) }
+        info.timezone = timezone.map { t($0, 64) }
+        info.networkType = networkType.map { t($0, 32) }
+        info.pushAuthorization = pushAuthorization.map { t($0, 32) }
+        return info
+    }
+}
+
 protocol DeviceInfoProvider: Sendable {
     func current() async -> DeviceInfo
 }
 
 enum DeviceContext {
     /// The batch `context` block. Tier-2 keys are absent (not null) in minimal mode.
-    static func build(_ info: DeviceInfo, collection: DeviceDataCollection) -> HeraldValue {
+    static func build(_ raw: DeviceInfo, collection: DeviceDataCollection) -> HeraldValue {
+        let info = raw.truncatedToServerLimits()
         var context: [String: HeraldValue] = [
             "app": [
                 "name": .string(info.appName), "version": .string(info.appVersion),

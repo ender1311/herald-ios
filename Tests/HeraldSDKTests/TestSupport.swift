@@ -51,6 +51,7 @@ final class FakeTransport: HeraldTransport {
         var requests: [URLRequest] = []
         var batchResponses: [Result<FakeResponse, URLError>] = []
         var messageResponses: [FakeResponse] = []
+        var batchDelayNanoseconds: UInt64 = 0
     }
 
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -59,6 +60,7 @@ final class FakeTransport: HeraldTransport {
     var batchRequests: [URLRequest] { requests.filter { $0.url?.path.hasSuffix("/sdk/batch") == true } }
     var messageRequests: [URLRequest] { requests.filter { $0.url?.path.hasSuffix("/sdk/messages") == true } }
 
+    func setBatchDelay(milliseconds: UInt64) { state.withLock { $0.batchDelayNanoseconds = milliseconds * 1_000_000 } }
     func enqueueBatch(_ response: FakeResponse) { state.withLock { $0.batchResponses.append(.success(response)) } }
     func enqueueBatchError(_ error: URLError) { state.withLock { $0.batchResponses.append(.failure(error)) } }
     func enqueueMessages(_ response: FakeResponse) { state.withLock { $0.messageResponses.append(response) } }
@@ -82,6 +84,8 @@ final class FakeTransport: HeraldTransport {
                     : s.messageResponses.removeFirst()
             )
         }
+        let delay = state.withLock { $0.batchDelayNanoseconds }
+        if isBatch, delay > 0 { try? await Task.sleep(nanoseconds: delay) }
         let response = try result.get()
         let http = HTTPURLResponse(url: request.url!, statusCode: response.status, httpVersion: nil, headerFields: response.headers)!
         return (response.body, http)

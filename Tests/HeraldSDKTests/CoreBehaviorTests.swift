@@ -53,6 +53,7 @@ final class CoreBehaviorTests: XCTestCase {
     func testResetClearsUserState() async throws {
         let harness = CoreHarness()
         let core = harness.makeCore()
+        await core.appDidBecomeActive()
         await core.identify(userId: "u1", traits: [:])
         await core.setUserToken("tok1")
         await core.drain()
@@ -72,7 +73,7 @@ final class CoreBehaviorTests: XCTestCase {
         XCTAssertNil(state.userId)
         XCTAssertNil(state.userToken)
         XCTAssertNil(state.messagesETag)
-        XCTAssertNil(state.lastShown["u1"])
+        XCTAssertEqual(state.lastShown["u1"]?["msg_5"], shownBefore, "in-app history survives reset")
         XCTAssertNotEqual(state.session?.id, oldSession, "reset starts a new session")
         let cards = await core.visibleCards()
         XCTAssertTrue(cards.isEmpty)
@@ -93,15 +94,30 @@ final class CoreBehaviorTests: XCTestCase {
         // After reset, the anonymous sync carries no user id.
         let lastSync = try XCTUnwrap(harness.transport.messageRequests.last)
         XCTAssertEqual(lastSync.url?.query?.contains("userId"), false)
+
+        // Logging back in restores u1's history: msg_5 (every 24 h) is not eligible again yet.
+        await core.identify(userId: "u1", traits: [:])
+        let restored = await core.engine.lastShown["msg_5"]
+        XCTAssertEqual(restored, shownBefore)
+    }
+
+    /// Active app with the fixture messages synced (the session's own sync used the default empty response).
+    private func activeCoreWithMessages(_ harness: CoreHarness) async throws -> HeraldCore {
+        let core = harness.makeCore()
+        await core.appDidBecomeActive()
+        await core.drain()
+        harness.transport.enqueueMessages(try messagesResponse())
+        await core.syncMessages()
+        return core
+    }
+
+    private func waitUntil(_ condition: () async -> Bool) async {
+        for _ in 0..<2000 where !(await condition()) { await Task.yield() }
     }
 
     func testTrackTriggersHighestPriorityMessageAndLogsImpression() async throws {
         let harness = CoreHarness()
-        let core = harness.makeCore()
-        await core.ensureSession()  // the session's own sync runs first, with the default empty response
-        await core.drain()
-        harness.transport.enqueueMessages(try messagesResponse())
-        await core.syncMessages()
+        let core = try await activeCoreWithMessages(harness)
 
         await core.track("workout_completed", properties: ["minutes": 10])
         await core.drain()
@@ -111,17 +127,18 @@ final class CoreBehaviorTests: XCTestCase {
         await core.drain()
         XCTAssertEqual(harness.output.offered.map(\.id), ["msg_2"])
 
-        // While it is on screen nothing else shows, even past the minimum interval.
+        // While it is on screen nothing else shows, even past the minimum interval: the push-open
+        // message waits in the pending list.
         harness.clock.advance(60)
         await core.pushResponse(messageId: "dec_x", decisionId: "dec_x", action: "open", buttonId: nil)
         await core.drain()
         XCTAssertEqual(harness.output.offered.count, 1)
+        let pending = await core.state.pendingMessageIds
+        XCTAssertEqual(pending, ["msg_6"])
 
+        // Closing msg_2 shows the pending message.
         await harness.output.closeAll()
-        for _ in 0..<1000 where await core.engine.isShowing { await Task.yield() }  // onClose hops back asynchronously
-        let showing = await core.engine.isShowing
-        XCTAssertFalse(showing, "onClose releases the slot")
-        await core.pushResponse(messageId: "dec_x", decisionId: "dec_x", action: "open", buttonId: nil)
+        await waitUntil { harness.output.offered.count == 2 }
         await core.drain()
         XCTAssertEqual(harness.output.offered.map(\.id), ["msg_2", "msg_6"])
 
@@ -130,42 +147,52 @@ final class CoreBehaviorTests: XCTestCase {
         let interactions = events.compactMap(\.objectValue).filter { $0["type"] == "interaction" }
         XCTAssertTrue(interactions.contains { $0["messageId"] == "msg_2" && $0["action"] == "impression" && $0["decisionId"] == "dec_2" && $0["kind"] == "in_app" })
         XCTAssertTrue(interactions.contains { $0["kind"] == "push" && $0["action"] == "open" })
-        let shown = await core.state.lastShown[""]?["msg_2"]
+        let shown = await core.state.lastShown["anonymous"]?["msg_2"]
         XCTAssertNotNil(shown, "once-only message is recorded as shown")
     }
 
-    func testDelegateLaterAndDiscard() async throws {
+    func testDelegateLaterDiscardAndNoPresenter() async throws {
         let harness = CoreHarness()
-        let core = harness.makeCore()
-        await core.ensureSession()  // the session's own sync runs first, with the default empty response
-        await core.drain()
-        harness.transport.enqueueMessages(try messagesResponse())
-        await core.syncMessages()
+        let core = try await activeCoreWithMessages(harness)
 
         harness.output.setChoice(.discard)
         await core.fire(.sessionStart)
         await core.drain()
-        var shown = await core.state.lastShown[""]?["msg_5"]
-        XCTAssertNil(shown, "discard keeps the message eligible")
+        var shown = await core.state.lastShown["anonymous"]?["msg_5"]
+        XCTAssertNil(shown, "discard does not mark the message shown")
+        var pending = await core.state.pendingMessageIds
+        XCTAssertTrue(pending.isEmpty, "discard drops this occurrence")
 
         harness.output.setChoice(.later)
         await core.fire(.sessionStart)
         await core.drain()
+        pending = await core.state.pendingMessageIds
+        XCTAssertEqual(pending, ["msg_5"], ".later keeps it pending")
         harness.output.setChoice(.display)
         await core.showNext()
         await core.drain()
         XCTAssertEqual(harness.output.offered.map(\.id), ["msg_5", "msg_5", "msg_5"])
-        shown = await core.state.lastShown[""]?["msg_5"]
+        shown = await core.state.lastShown["anonymous"]?["msg_5"]
         XCTAssertNotNil(shown)
 
-        harness.output.setChoice(nil)  // no presenter: nothing is consumed
+        // No presenter: the message is not consumed and shows once one is set.
+        harness.output.setChoice(nil)
         await harness.output.closeAll()
-        await core.drain()
+        await waitUntil { await core.showingId == nil }
         harness.clock.advance(31)
         await core.track("workout_completed", properties: ["minutes": 40])
         await core.drain()
-        let msg2Shown = await core.state.lastShown[""]?["msg_2"]
+        var msg2Shown = await core.state.lastShown["anonymous"]?["msg_2"]
         XCTAssertNil(msg2Shown)
+        pending = await core.state.pendingMessageIds
+        XCTAssertEqual(pending, ["msg_2"])
+
+        harness.output.setChoice(.display)
+        await core.showPendingIfPossible()  // what setting a presenter does
+        await core.drain()
+        XCTAssertEqual(harness.output.offered.last?.id, "msg_2")
+        msg2Shown = await core.state.lastShown["anonymous"]?["msg_2"]
+        XCTAssertNotNil(msg2Shown)
     }
 
     func testDisabledSDKRecordsNothing() async throws {
