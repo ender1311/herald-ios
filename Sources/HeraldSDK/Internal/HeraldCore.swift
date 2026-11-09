@@ -16,6 +16,7 @@ actor HeraldCore {
     static let maxBatchEvents = 100
     static let maxBatchBytes = 512 * 1024
     static let anonymousKey = "anonymous"
+    static let maxRecentPushOpens = 50
 
     let configuration: HeraldConfiguration
     private let storage: Storage
@@ -144,6 +145,7 @@ actor HeraldCore {
         state.dismissedCardIds = []
         state.messagesETag = nil
         state.pendingMessageIds = []
+        state.deferredPushSubscription = nil
         storage.saveMessages(nil)
         cards = []
         engine.messages = []
@@ -182,19 +184,28 @@ actor HeraldCore {
     }
 
     func setAttributes(_ attributes: [String: HeraldValue]) {
-        guard state.enabled, !attributes.isEmpty else { return }
+        guard state.enabled else { return }
+        let attributes = Validation.droppingInvalidContacts(attributes)
+        guard !attributes.isEmpty else { return }
         if rejected("setAttributes", Validation.attributes("attribute", attributes)) { return }
         record("attributes", ["attributes": .object(attributes)])
     }
 
-    /// Push subscription changes made before any APNs token exists wait for the token, so the server
-    /// always sees the device's push_token before its push subscription.
+    /// A push opt-in made before any APNs token exists waits for the token, so the server sees the
+    /// device's push_token first. An opt-out is sent at once (a denied permission never yields a token)
+    /// and cancels any deferred opt-in.
     func setSubscription(_ channel: SubscriptionChannel, _ subscriptionState: SubscriptionState) {
         guard state.enabled else { return }
-        if channel == .push, state.pushToken == nil {
-            state.deferredPushSubscription = subscriptionState
-            persist()
-            return
+        if channel == .push {
+            if subscriptionState != .unsubscribed, state.pushToken == nil {
+                state.deferredPushSubscription = subscriptionState
+                persist()
+                return
+            }
+            if state.deferredPushSubscription != nil {
+                state.deferredPushSubscription = nil
+                persist()
+            }
         }
         record("subscription", ["channel": .string(channel.rawValue), "state": .string(subscriptionState.rawValue)])
     }
@@ -228,6 +239,15 @@ actor HeraldCore {
     /// The user acted on a Herald push (`open`, `button` or `dismiss`). Opens evaluate `push_open` triggers.
     func pushResponse(messageId: String, decisionId: String?, action: String, buttonId: String?) {
         guard state.enabled else { return }
+        // A redelivered response counts once per decision. Without a decision id there is no per-send key.
+        if action == "open", let decisionId, !decisionId.isEmpty {
+            if state.recentPushOpens.contains(decisionId) { return }
+            state.recentPushOpens.append(decisionId)
+            if state.recentPushOpens.count > Self.maxRecentPushOpens {
+                state.recentPushOpens.removeFirst(state.recentPushOpens.count - Self.maxRecentPushOpens)
+            }
+            persist()
+        }
         guard logInteraction(messageId: messageId, kind: "push", action: action, decisionId: decisionId, buttonId: buttonId)
         else { return }
         if action != "dismiss" { fire(.pushOpen) }
@@ -345,12 +365,14 @@ actor HeraldCore {
         let choice = await output.offer(message) { [weak self] in
             Task { await self?.messageClosed(id: messageId) }
         }
-        // reset(), identify or wipeData() may have run while the main actor decided.
-        let sameUser = user == userKey && showingId == messageId
+        // wipeData() (or anything else that freed the slot) may have run while the main actor decided.
+        // A reset or identify does not make the hand-off stale: history goes under the user captured at
+        // hand-off.
+        let stillOnScreen = showingId == messageId
         switch choice {
         case .display:
             // On screen now; the slot stays taken until onClose.
-            guard sameUser else { return }
+            guard stillOnScreen else { return }
             let date = now()
             engine.recordDisplay(message, now: date)
             state.lastShown[user, default: [:]][messageId] = date

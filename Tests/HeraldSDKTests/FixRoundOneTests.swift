@@ -147,7 +147,6 @@ final class FixRoundOneTests: XCTestCase {
         await core.trackPurchase(productId: "p", price: 1, currency: "USD", quantity: 0, properties: [:])
         await core.identify(userId: String(repeating: "u", count: 201), traits: [:])
         await core.identify(userId: "u", traits: ["bad": ["a": 1]])
-        await core.setAttributes(["ok": 1, "$email": "nope"])
         await core.logMessageClick(message, buttonId: "")
         await core.logCardClick(card)
         await core.pushResponse(messageId: "m", decisionId: String(repeating: "d", count: 201), action: "open", buttonId: nil)

@@ -33,13 +33,9 @@ final class WireFormatTests: XCTestCase {
         var actual = try XCTUnwrap(bodies.first?.objectValue)
         var expected = try XCTUnwrap(fixtureJSON("batch-full").objectValue)
 
-        // Ruling (f): the push_token must precede the push subscription in a batch. The fixture lists the
-        // subscription first, so swap those two in the expected document and compare events without ids
-        // (ids are checked separately).
-        var expectedEvents = try XCTUnwrap(expected["events"]?.arrayValue)
-        XCTAssertEqual(expectedEvents[6].objectValue?["type"], "subscription")
-        XCTAssertEqual(expectedEvents[7].objectValue?["type"], "push_token")
-        expectedEvents.swapAt(6, 7)
+        // The SDK defers the push opt-in until the token exists, so it numbers the token before the
+        // subscription; the fixture numbers them the other way. Event ids are checked on their own and
+        // the documents are compared without them.
         let withoutIds = { (events: [HeraldValue]) -> HeraldValue in
             .array(events.map { event in
                 var object = event.objectValue ?? [:]
@@ -47,7 +43,7 @@ final class WireFormatTests: XCTestCase {
                 return .object(object)
             })
         }
-        expected["events"] = withoutIds(expectedEvents)
+        expected["events"] = withoutIds(try XCTUnwrap(expected["events"]?.arrayValue))
 
         var events = try XCTUnwrap(actual["events"]?.arrayValue)
         XCTAssertEqual(events.compactMap { $0.objectValue?["id"]?.stringValue }, (1...10).map { String(format: "0b8f3c2e-0000-4000-8000-%012d", $0) })

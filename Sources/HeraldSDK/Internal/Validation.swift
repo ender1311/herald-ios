@@ -35,6 +35,21 @@ enum Validation {
         return nil
     }
 
+    /// Removes a `$email` / `$phone` string that fails the server's check, with a warning, so the rest
+    /// of a `setAttributes` call still goes through (the server would skip just that value too).
+    static func droppingInvalidContacts(_ map: [String: HeraldValue]) -> [String: HeraldValue] {
+        var result = map
+        if let email = map["$email"]?.stringValue, !isValidEmail(email) {
+            Log.warning("setAttributes: $email is not a valid email; dropped that key")
+            result["$email"] = nil
+        }
+        if let phone = map["$phone"]?.stringValue, !isValidPhone(phone) {
+            Log.warning("setAttributes: $phone must be E.164, for example +15551234567; dropped that key")
+            result["$phone"] = nil
+        }
+        return result
+    }
+
     /// Event properties: keys up to 255; any JSON value, but numbers must be finite.
     static func properties(_ field: String, _ map: [String: HeraldValue]) -> String? {
         for (key, value) in map {

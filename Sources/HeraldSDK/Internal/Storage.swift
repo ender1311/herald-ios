@@ -30,6 +30,8 @@ struct PersistedState: Codable, Equatable {
     var pushToken: String?
     /// A push subscription change recorded before any APNs token existed; sent right after the token.
     var deferredPushSubscription: SubscriptionState?
+    /// Decision ids of recently opened pushes (newest last, capped), so a redelivered open counts once.
+    var recentPushOpens: [String] = []
 
     init(deviceId: String) {
         self.deviceId = deviceId
@@ -37,7 +39,7 @@ struct PersistedState: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case deviceId, userId, userToken, pendingTokens, dropped, enabled, session, lastShown, lastDisplayAt
-        case pendingMessageIds, dismissedCardIds, messagesETag, pushToken, deferredPushSubscription
+        case pendingMessageIds, dismissedCardIds, messagesETag, pushToken, deferredPushSubscription, recentPushOpens
     }
 
     /// Every field but the device id is optional, so state written by an older SDK version still loads.
@@ -57,6 +59,7 @@ struct PersistedState: Codable, Equatable {
         messagesETag = c.lenient(String.self, .messagesETag)
         pushToken = c.lenient(String.self, .pushToken)
         deferredPushSubscription = c.lenient(SubscriptionState.self, .deferredPushSubscription)
+        recentPushOpens = c.lenient([String].self, .recentPushOpens) ?? []
     }
 }
 
