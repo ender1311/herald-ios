@@ -2,5 +2,7 @@
 // Config.example.xcconfig). In xcconfig files `//` starts a comment, so URLs use `/$()/`.
 HERALD_ENDPOINT = http:/$()/localhost:3000
 HERALD_APP_KEY = pk_test_replace_me
+// Debug only: identity token for the user `-LumenUser` names (see LumenSampleApp.swift).
+HERALD_USER_TOKEN =
 
 #include? "Config.xcconfig"

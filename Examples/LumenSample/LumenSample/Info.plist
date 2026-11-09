@@ -33,6 +33,8 @@
 	</array>
 	<key>HeraldAppKey</key>
 	<string>$(HERALD_APP_KEY)</string>
+	<key>HeraldUserToken</key>
+	<string>$(HERALD_USER_TOKEN)</string>
 	<key>HeraldEndpoint</key>
 	<string>$(HERALD_ENDPOINT)</string>
 	<key>LSRequiresIPhoneOS</key>
