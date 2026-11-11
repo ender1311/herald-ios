@@ -2,6 +2,15 @@
 
 Releases follow the policy on [Versioning and support](https://beaconfrontier.com/herald/docs/operations/versioning-and-support). iOS and Android share version numbers.
 
+## 0.2.3
+
+### Fixed
+
+- Push comes back after `wipeData()` then `setEnabled(true)` while notification permission is still granted: the SDK calls `registerForRemoteNotifications()` so iOS hands the token back through your `didRegisterForRemoteNotificationsWithDeviceToken` forwarding, then sends the push token and a push `subscribed`. Each launch while enabled, authorized and without a stored token also registers (without changing the subscription).
+- Content card impressions are logged once per card per session, not each time a feed is built (relaunch, filter change). Reset when a session starts or the user changes.
+- An expired content card leaves the card list (and an open `ContentCardFeed`) at its expiry time, without waiting for a sync.
+- Once the server has refused an identified message sync without a user token, later identified syncs wait for `setUserToken` instead of collecting a 401. The expected 401 before the first `setUserToken` is logged at debug level, not as a warning.
+
 ## 0.2.2
 
 ### Added

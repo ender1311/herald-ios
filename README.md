@@ -13,7 +13,7 @@ In Xcode, choose **File > Add Package Dependencies**, enter `https://github.com/
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ender1311/herald-ios", from: "0.2.2"),
+    .package(url: "https://github.com/ender1311/herald-ios", from: "0.2.3"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
