@@ -15,7 +15,7 @@ import UserNotifications
 /// the host app: invalid input is logged and skipped.
 public final class Herald: Sendable {
     public static let shared = Herald()
-    public static let sdkVersion = "0.2.1"
+    public static let sdkVersion = "0.2.2"
     /// Calls kept before `configure` runs (and while the core is busy); newer calls are dropped beyond it.
     static let maxBufferedCalls = 1_000
 
