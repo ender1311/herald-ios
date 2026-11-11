@@ -43,6 +43,8 @@ actor HeraldCore {
     private(set) var nextAttemptAt: Date?
     /// Users whose batch got 401: their events stay queued and unsent until `setUserToken`.
     private(set) var usersAwaitingToken: Set<String> = []
+    /// The server refused the app key: nothing is sent (and nothing dropped) until the next launch.
+    private(set) var appKeyRejected = false
     private(set) var isForeground = false
     private var flushTimer: Task<Void, Never>?
     private var intervalRetry: Task<Void, Never>?
@@ -683,7 +685,7 @@ actor HeraldCore {
 
     /// Sends queued events in batches until the queue is empty, a batch must be retried, or the SDK is disabled.
     private func runFlush() async {
-        guard state.enabled else { return }
+        guard state.enabled, !appKeyRejected else { return }
         if let nextAttemptAt, now() < nextAttemptAt { return }
 
         while state.enabled, !queue.entries.isEmpty {
@@ -703,8 +705,10 @@ actor HeraldCore {
 
             let ids = Set(sent.map(\.id))
             let outcome: BatchOutcome
+            var responseBody = Data()
             do {
                 let (data, response) = try await transport.send(request)
+                responseBody = data
                 outcome = Backoff.outcome(
                     status: response.statusCode, response: response, body: data,
                     attempt: failureCount + 1, random: random(), now: now()
@@ -721,6 +725,11 @@ actor HeraldCore {
                 failureCount = 0
                 nextAttemptAt = nil
                 pruneTokens()
+            case .rejected(401) where Backoff.isAppKeyRejection(responseBody):
+                // Retrying cannot help, but dropping would lose the events to a configuration mistake.
+                Log.error("Herald rejected the app key: check the publishable key in configure")
+                appKeyRejected = true
+                return
             case .rejected(401) where userId != nil:
                 // Most likely identify() ran and setUserToken() has not yet: keep the events for the token.
                 // A token set while this request was in flight is tried on the next loop pass.

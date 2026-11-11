@@ -177,6 +177,27 @@ final class QueueAndFlushTests: XCTestCase {
         XCTAssertEqual(left, 0)
     }
 
+    /// Fix round 2: a 401 for a wrong app key keeps every event (identified or anonymous) and stops sending.
+    func testInvalidAppKeyKeepsEventsAndStopsSending() async throws {
+        for user in [nil, "u1"] as [String?] {
+            let harness = CoreHarness()
+            let core = harness.makeCore()
+            if let user { await core.identify(userId: user, traits: [:]) } else { await core.track("a", properties: [:]) }
+            await core.drain()
+            let queued = await core.queuedCount
+            harness.transport.enqueueBatch(FakeResponse(status: 401, body: Data(#"{"error":"Invalid app key"}"#.utf8)))
+            await core.flushNow()
+            let kept = await core.queuedCount
+            XCTAssertEqual(kept, queued, "user \(user ?? "anonymous"): nothing dropped")
+            await core.setUserToken("tok1")
+            await core.drain()
+            await core.flushNow()
+            XCTAssertEqual(harness.transport.batchRequests.count, 1, "no more sends until the next launch")
+            let held = await core.usersAwaitingToken
+            XCTAssertTrue(held.isEmpty, "not mistaken for a missing user token")
+        }
+    }
+
     func testAnonymousEventsStillFlushWhileAUserWaitsForToken() async throws {
         let harness = CoreHarness()
         let core = harness.makeCore()

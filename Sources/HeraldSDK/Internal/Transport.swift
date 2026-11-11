@@ -25,8 +25,8 @@ struct URLSessionTransport: HeraldTransport {
 /// How a batch response is handled.
 enum BatchOutcome: Equatable {
     case accepted
-    /// Retrying will not help (400, 401, 413, other 4xx): drop the batch. Exception: an identified batch
-    /// with 401 waits for `setUserToken`.
+    /// Retrying will not help (400, 401, 413, other 4xx): drop the batch. Except a 401: a refused app key
+    /// stops sending until the next launch, and an identified batch waits for `setUserToken`.
     case rejected(status: Int)
     /// 408, 429, 5xx or a network error: keep the batch and retry after `delay` seconds.
     case retry(delay: TimeInterval)
@@ -60,6 +60,11 @@ enum Backoff {
             return min(seconds, 3600)
         }
         return nil
+    }
+
+    /// A 401 whose body is the server's `{"error":"Invalid app key"}` (src/lib/sdk/auth.ts).
+    static func isAppKeyRejection(_ body: Data) -> Bool {
+        (try? JSONDecoder().decode(HeraldValue.self, from: body))?.objectValue?["error"]?.stringValue == "Invalid app key"
     }
 
     static func outcome(status: Int, response: HTTPURLResponse, body: Data, attempt: Int, random: Double, now: Date)
