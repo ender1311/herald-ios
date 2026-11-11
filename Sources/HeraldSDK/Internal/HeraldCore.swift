@@ -562,6 +562,8 @@ actor HeraldCore {
         guard state.enabled else { return }
         ensureSession()
         startFlushTimer()
+        // Timers do not run while the app is suspended: drop cards that expired meanwhile and reschedule.
+        publishCards()
         showPendingIfPossible()
     }
 
@@ -757,6 +759,11 @@ actor HeraldCore {
             switch outcome {
             case .accepted:
                 queue.remove(ids: ids)
+                // A signed-in batch accepted without a token: verification is off, so identified syncs resume.
+                if userId != nil, request.value(forHTTPHeaderField: "x-herald-user-token") == nil, state.userTokenRequired {
+                    state.userTokenRequired = false
+                    persist()
+                }
                 state.dropped = max(0, state.dropped - droppedReported)
                 failureCount = 0
                 nextAttemptAt = nil

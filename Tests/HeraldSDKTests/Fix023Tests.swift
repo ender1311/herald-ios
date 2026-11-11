@@ -142,4 +142,37 @@ final class Fix023Tests: XCTestCase {
         let required = await core.state.userTokenRequired
         XCTAssertFalse(required)
     }
+
+    // Review I1: a signed-in batch accepted without a token clears the flag, so identified syncs resume.
+    func testTokenlessBatchAcceptedClearsTokenRequired() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        harness.transport.enqueueMessages(FakeResponse(status: 401, body: Data(#"{"error":"Invalid user token"}"#.utf8)))
+        await core.identify(userId: "u1", traits: [:])
+        await core.drain()
+        var required = await core.state.userTokenRequired
+        XCTAssertTrue(required)
+        await core.flushNow()  // the server accepts u1's batch without a token: verification is off
+        required = await core.state.userTokenRequired
+        XCTAssertFalse(required)
+        let before = harness.transport.messageRequests.count
+        await core.syncMessages()
+        XCTAssertEqual(harness.transport.messageRequests.count, before + 1)
+    }
+
+    // Review M3: returning to the foreground drops cards that expired while the app was suspended.
+    func testForegroundDropsCardsThatExpiredWhileSuspended() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        let expiring = ContentCard(id: "soon", type: .classic, createdAt: t0, expiresAt: t0.addingTimeInterval(60))
+        let lasting = ContentCard(id: "stays", type: .classic, createdAt: t0)
+        await core.debugApply(MessagesPayload(syncedAt: nil, contentCards: [expiring, lasting], inAppMessages: []))
+        await core.drain()
+        XCTAssertEqual(harness.output.lastCards?.map(\.id), ["soon", "stays"])
+        harness.clock.advance(120)  // the timer did not run while suspended
+        harness.transport.enqueueMessages(FakeResponse(status: 304))  // the session-start sync keeps the cache
+        await core.appDidBecomeActive()
+        await core.drain()
+        XCTAssertEqual(harness.output.lastCards?.map(\.id), ["stays"])
+    }
 }

@@ -217,7 +217,7 @@ public final class Herald: Sendable {
             granted = false
         }
         if granted {
-            await MainActor.run { UIApplication.shared.registerForRemoteNotifications() }
+            await PushRegistrar.register()
         }
         setSubscription(.push, granted ? .optedIn : .unsubscribed)
         return granted

@@ -8,7 +8,7 @@ Releases follow the policy on [Versioning and support](https://beaconfrontier.co
 
 - Push comes back after `wipeData()` then `setEnabled(true)` while notification permission is still granted: the SDK calls `registerForRemoteNotifications()` so iOS hands the token back through your `didRegisterForRemoteNotificationsWithDeviceToken` forwarding, then sends the push token and a push `subscribed`. Each launch while enabled, authorized and without a stored token also registers (without changing the subscription).
 - Content card impressions are logged once per card per session, not each time a feed is built (relaunch, filter change). Reset when a session starts or the user changes.
-- An expired content card leaves the card list (and an open `ContentCardFeed`) at its expiry time, without waiting for a sync.
+- An expired content card leaves the card list (and an open `ContentCardFeed`) at its expiry time, without waiting for a sync, and on return to the foreground if the app was suspended past it.
 - HeraldUI: slideups dismiss only by swiping toward their edge (up for a top slideup, down for a bottom one), as on Android; a sideways swipe no longer dismisses. The VoiceOver **Dismiss** action and escape gesture still work.
 - Once the server has refused an identified message sync without a user token, later identified syncs wait for `setUserToken` instead of collecting a 401. The expected 401 before the first `setUserToken` is logged at debug level, not as a warning.
 
