@@ -2,6 +2,10 @@
 
 Releases follow the policy on [Versioning and support](https://beaconfrontier.com/herald/docs/operations/versioning-and-support). iOS and Android share version numbers.
 
+## 0.2.1
+
+No functional change; version kept in step with Android.
+
 ## 0.2.0
 
 ### Added
