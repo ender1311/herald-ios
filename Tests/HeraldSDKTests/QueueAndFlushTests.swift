@@ -150,6 +150,52 @@ final class QueueAndFlushTests: XCTestCase {
         }
     }
 
+    /// I1: a 401 on an identified batch keeps it until setUserToken, which sends it with the token.
+    func testUnauthorizedIdentifiedBatchWaitsForToken() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.identify(userId: "u1", traits: ["plan": "free"])
+        await core.track("after_login", properties: [:])
+        await core.drain()
+        let queued = await core.queuedCount
+        harness.transport.enqueueBatch(FakeResponse(status: 401, body: Data(#"{"error":"Invalid user token"}"#.utf8)))
+        await core.flushNow()
+        let kept = await core.queuedCount
+        XCTAssertEqual(kept, queued, "the batch stays on disk")
+        await core.flushNow()
+        XCTAssertEqual(harness.transport.batchRequests.count, 1, "no retry before setUserToken")
+
+        await core.setUserToken("tok1")
+        await core.drain()
+        XCTAssertEqual(harness.transport.batchRequests.count, 2)
+        XCTAssertEqual(harness.transport.batchRequests.last?.value(forHTTPHeaderField: "x-herald-user-token"), "tok1")
+        let body = try XCTUnwrap(harness.transport.batchBodies().last?.objectValue)
+        let types = body["events"]?.arrayValue?.compactMap { $0.objectValue?["type"]?.stringValue } ?? []
+        XCTAssertTrue(types.contains("identify"))
+        XCTAssertEqual(body["userId"], "u1")
+        let left = await core.queuedCount
+        XCTAssertEqual(left, 0)
+    }
+
+    func testAnonymousEventsStillFlushWhileAUserWaitsForToken() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.identify(userId: "u1", traits: [:])
+        await core.drain()
+        harness.transport.enqueueBatch(FakeResponse(status: 401))
+        await core.flushNow()
+        let held = await core.queuedCount
+        await core.reset()
+        await core.track("anon", properties: [:])
+        await core.drain()
+        await core.flushNow()
+        let bodies = try harness.transport.batchBodies()
+        XCTAssertEqual(bodies.count, 2)
+        XCTAssertEqual(bodies.last?.objectValue?["userId"], .null)
+        let left = await core.queuedCount
+        XCTAssertEqual(left, held + 1, "u1's events and its session_end stay queued")
+    }
+
     func testBatchesNeverMixUsers() async throws {
         let harness = CoreHarness()
         let core = harness.makeCore()

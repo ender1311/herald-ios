@@ -41,6 +41,8 @@ actor HeraldCore {
     private var resyncRequested = false
     private(set) var failureCount = 0
     private(set) var nextAttemptAt: Date?
+    /// Users whose batch got 401: their events stay queued and unsent until `setUserToken`.
+    private(set) var usersAwaitingToken: Set<String> = []
     private(set) var isForeground = false
     private var flushTimer: Task<Void, Never>?
     private var intervalRetry: Task<Void, Never>?
@@ -124,6 +126,10 @@ actor HeraldCore {
         let changed = state.userToken != token
         state.userToken = token
         persist()
+        if !usersAwaitingToken.isEmpty {
+            usersAwaitingToken = []
+            if state.enabled { scheduleFlush() }
+        }
         // identify() already synced without the token, which a server requiring verification refuses.
         if changed, token != nil, state.userId != nil, state.enabled { scheduleSync(thenFire: nil) }
     }
@@ -579,6 +585,7 @@ actor HeraldCore {
         showingId = nil
         failureCount = 0
         nextAttemptAt = nil
+        usersAwaitingToken = []
         persist()
         publishCards()
     }
@@ -667,6 +674,14 @@ actor HeraldCore {
                 failureCount = 0
                 nextAttemptAt = nil
                 pruneTokens()
+            case .rejected(401) where userId != nil:
+                // Most likely identify() ran and setUserToken() has not yet: keep the events for the token.
+                // A token set while this request was in flight is tried on the next loop pass.
+                if token(for: userId) != request.value(forHTTPHeaderField: "x-herald-user-token") { continue }
+                if usersAwaitingToken.isEmpty { Log.warning("Herald needs a user token: call setUserToken") }
+                usersAwaitingToken.insert(userId!)
+                failureCount = 0
+                nextAttemptAt = nil
             case .rejected(let status):
                 Log.error("Herald rejected a batch of \(sent.count) event(s) with HTTP \(status); dropping it")
                 queue.remove(ids: ids)
@@ -682,14 +697,14 @@ actor HeraldCore {
         }
     }
 
-    /// The oldest run of events for one user, up to 100. Anonymous events may lead into the identified
-    /// run that follows them (that is the identify), but events never cross from one user to another
-    /// or from a user back to anonymous.
+    /// The oldest run of events for one user, up to 100, skipping users waiting for a token. Events
+    /// never cross from one user to another or from a user back to anonymous.
     func nextBatch() -> (events: [QueuedEvent], userId: String?) {
         // Each batch holds one recorded user (anonymous counts as one), so pre-login events stay anonymous.
-        guard let first = queue.entries.first else { return ([], nil) }
+        let sendable = queue.entries.filter { $0.userId.map { !usersAwaitingToken.contains($0) } ?? true }
+        guard let first = sendable.first else { return ([], nil) }
         var batch: [QueuedEvent] = []
-        for entry in queue.entries {
+        for entry in sendable {
             if batch.count == Self.maxBatchEvents || entry.userId != first.userId { break }
             batch.append(entry)
         }

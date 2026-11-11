@@ -25,7 +25,8 @@ struct URLSessionTransport: HeraldTransport {
 /// How a batch response is handled.
 enum BatchOutcome: Equatable {
     case accepted
-    /// Retrying will not help (400, 401, 413, other 4xx): drop the batch.
+    /// Retrying will not help (400, 401, 413, other 4xx): drop the batch. Exception: an identified batch
+    /// with 401 waits for `setUserToken`.
     case rejected(status: Int)
     /// 408, 429, 5xx or a network error: keep the batch and retry after `delay` seconds.
     case retry(delay: TimeInterval)
