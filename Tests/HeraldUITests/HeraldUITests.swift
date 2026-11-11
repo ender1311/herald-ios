@@ -61,4 +61,22 @@ final class HeraldUITests: XCTestCase {
         XCTAssertEqual(HeraldTheme(darkMode: false).colors(for: .dark), .light)
         XCTAssertEqual(HeraldTheme().colors(for: .dark), .dark)
     }
+
+    /// I4: a style background (or button) color without its text color gets black or white by contrast.
+    func testPartialStyleOverridesPickReadableText() {
+        let theme = HeraldTheme()
+        for scheme in [ColorScheme.light, .dark] {
+            let onWhite = MessageColors(style: .init(backgroundColor: "#FFFFFF", buttonColor: "#FFEB3B"), theme: theme, colorScheme: scheme)
+            XCTAssertEqual(onWhite.text, .black, "\(scheme)")
+            XCTAssertEqual(onWhite.buttonText, .black, "\(scheme)")
+            let onDark = MessageColors(style: .init(backgroundColor: "#101828", buttonColor: "#1A237E"), theme: theme, colorScheme: scheme)
+            XCTAssertEqual(onDark.text, .white, "\(scheme)")
+            XCTAssertEqual(onDark.buttonText, .white, "\(scheme)")
+            let explicit = MessageColors(style: .init(backgroundColor: "#FFFFFF", textColor: "#FF0000"), theme: theme, colorScheme: scheme)
+            XCTAssertEqual(explicit.text, Color(heraldHex: "#FF0000"), "an explicit text color wins")
+            let unset = MessageColors(style: .init(), theme: theme, colorScheme: scheme)
+            XCTAssertEqual(unset.text, theme.colors(for: scheme).onSurface, "no style: the theme's colors")
+            XCTAssertEqual(unset.buttonText, theme.colors(for: scheme).onAccent)
+        }
+    }
 }

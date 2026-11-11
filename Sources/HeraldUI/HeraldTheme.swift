@@ -120,15 +120,28 @@ extension View {
 extension Color {
     /// Parses "#RRGGBB" or "#AARRGGBB" (the format Herald message styles use); nil when invalid.
     public init?(heraldHex hex: String?) {
-        guard var text = hex?.trimmingCharacters(in: .whitespaces), text.hasPrefix("#") else { return nil }
-        text.removeFirst()
-        guard text.count == 6 || text.count == 8, let value = UInt64(text, radix: 16) else { return nil }
-        let alpha = text.count == 8 ? Double((value >> 24) & 0xFF) / 255 : 1
-        self.init(
-            .sRGB, red: Double((value >> 16) & 0xFF) / 255, green: Double((value >> 8) & 0xFF) / 255,
-            blue: Double(value & 0xFF) / 255, opacity: alpha
-        )
+        guard let (red, green, blue, alpha) = heraldRGBA(hex) else { return nil }
+        self.init(.sRGB, red: red, green: green, blue: blue, opacity: alpha)
     }
+
+    /// Black or white, whichever has the higher WCAG contrast ratio against `hex` (alpha ignored); nil
+    /// when `hex` is absent or invalid. Used for text on a style color the marketer set without its text color.
+    static func heraldReadable(onHex hex: String?) -> Color? {
+        guard let (red, green, blue, _) = heraldRGBA(hex) else { return nil }
+        func linear(_ c: Double) -> Double { c <= 0.03928 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+        let luminance = 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+        // Contrast with black is (L + 0.05) / 0.05, with white 1.05 / (L + 0.05).
+        return (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05) ? .black : .white
+    }
+}
+
+/// "#RRGGBB" or "#AARRGGBB" as sRGB components in 0...1; nil when invalid.
+private func heraldRGBA(_ hex: String?) -> (Double, Double, Double, Double)? {
+    guard var text = hex?.trimmingCharacters(in: .whitespaces), text.hasPrefix("#") else { return nil }
+    text.removeFirst()
+    guard text.count == 6 || text.count == 8, let value = UInt64(text, radix: 16) else { return nil }
+    let alpha = text.count == 8 ? Double((value >> 24) & 0xFF) / 255 : 1
+    return (Double((value >> 16) & 0xFF) / 255, Double((value >> 8) & 0xFF) / 255, Double(value & 0xFF) / 255, alpha)
 }
 
 /// Message colors after applying the message's style overrides on top of the theme.
@@ -139,13 +152,15 @@ public struct MessageColors: Sendable, Hashable {
     public var buttonText: Color
     public var cornerRadius: CGFloat
 
-    /// Each nil or invalid style field falls back to the theme.
+    /// Each nil or invalid style field falls back to the theme, except text on a style color: a set
+    /// background (or button) color without its text color gets black or white, whichever reads better
+    /// on it, since the theme's text color is picked for the theme's own background.
     public init(style: InAppMessage.Style, theme: HeraldTheme, colorScheme: ColorScheme) {
         let colors = theme.colors(for: colorScheme)
         background = Color(heraldHex: style.backgroundColor) ?? colors.surface
-        text = Color(heraldHex: style.textColor) ?? colors.onSurface
+        text = Color(heraldHex: style.textColor) ?? Color.heraldReadable(onHex: style.backgroundColor) ?? colors.onSurface
         button = Color(heraldHex: style.buttonColor) ?? colors.accent
-        buttonText = Color(heraldHex: style.buttonTextColor) ?? colors.onAccent
+        buttonText = Color(heraldHex: style.buttonTextColor) ?? Color.heraldReadable(onHex: style.buttonColor) ?? colors.onAccent
         cornerRadius = style.cornerRadius.map { CGFloat($0) } ?? theme.cornerRadius
     }
 }
