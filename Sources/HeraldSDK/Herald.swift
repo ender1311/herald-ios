@@ -267,6 +267,8 @@ public final class Herald: Sendable {
     /// usual ETag check; nothing happens while the SDK is disabled) and returns true when the push was a
     /// Herald sync (`herald_sync` is "1"), false otherwise. A sync push never shows anything and is never
     /// logged as a push open. One that arrives within 30 s of the last refreshed one is skipped.
+    /// It returns once the refresh has finished, or after 25 s at most, so the completion handler is called
+    /// within iOS's background budget; before `configure` it starts the refresh and returns at once.
     /// Main actor, like the app delegate it is called from.
     ///
     /// Wiring: turn on the Remote notifications background mode (`UIBackgroundModes` contains
@@ -284,10 +286,34 @@ public final class Herald: Sendable {
     /// ```
     /// Without the background mode, iOS does not wake the app and new messages arrive at the next session.
     @MainActor public func handleRemoteNotification(_ userInfo: [AnyHashable: Any]) async -> Bool {
+        await handleRemoteNotification(userInfo, deadline: Self.syncPushDeadline)
+    }
+
+    /// iOS gives `fetchCompletionHandler` about 30 s; `handleRemoteNotification` returns within this.
+    static let syncPushDeadline: TimeInterval = 25
+
+    @MainActor func handleRemoteNotification(_ userInfo: [AnyHashable: Any], deadline: TimeInterval) async -> Bool {
         guard userInfo[Self.syncKey] as? String == "1" else { return false }
+        // Before configure the refresh waits in the call buffer, maybe forever: start it, do not wait for it.
+        guard configured.withLock({ $0 }) else {
+            send { core in core.syncFromPush {} }
+            return true
+        }
         await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-            let queued = send { core in core.syncFromPush { done.resume() } }
-            if !queued { done.resume() }
+            // The refresh and the deadline race; whichever comes first resumes, exactly once.
+            let resumed = OSAllocatedUnfairLock(initialState: false)
+            let finish: @Sendable () -> Void = {
+                let first = resumed.withLock { wasResumed in
+                    defer { wasResumed = true }
+                    return !wasResumed
+                }
+                if first { done.resume() }
+            }
+            guard send({ core in core.syncFromPush(done: finish) }) else { return finish() }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+                finish()
+            }
         }
         return true
     }

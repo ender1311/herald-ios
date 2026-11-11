@@ -1,3 +1,4 @@
+import os
 import XCTest
 @testable import HeraldSDK
 
@@ -62,5 +63,52 @@ final class SyncPushTests: XCTestCase {
         let synced = await herald.handleRemoteNotification(["aps": ["content-available": 1], "herald_sync": "1"])
         XCTAssertTrue(synced)
         XCTAssertGreaterThan(transport.messageRequests.count, before, "the refresh finished before it returned")
+    }
+
+    /// I6: a refresh that never finishes must not hold the completion handler past the deadline.
+    @MainActor
+    func testHandleRemoteNotificationReturnsByTheDeadline() async throws {
+        let transport = StallingTransport()
+        let herald = Herald()
+        var configuration = HeraldConfiguration(appKey: "pk_live", endpoint: URL(string: "https://h.example.com")!)
+        configuration.flushInterval = 3600
+        let directory = tempDirectory()
+        herald.start(configuration, storage: { Storage(directory: directory) }, transport: transport, deviceInfo: FixtureDeviceInfo())
+        // Let the session-start sync finish, so the push's refresh is the one that stalls.
+        for _ in 0..<200 where transport.messageRequests < 1 { try await Task.sleep(nanoseconds: 10_000_000) }
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let started = Date()
+        let synced = await herald.handleRemoteNotification(["herald_sync": "1"], deadline: 0.3)
+        XCTAssertTrue(synced)
+        XCTAssertEqual(transport.messageRequests, 2, "the push's refresh started and is still stalled")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5, "returned at the deadline, not when the refresh ends")
+    }
+
+    @MainActor
+    func testHandleRemoteNotificationBeforeConfigureReturnsAtOnce() async {
+        let herald = Herald()
+        let synced = await herald.handleRemoteNotification(["herald_sync": "1"], deadline: 60)
+        XCTAssertTrue(synced, "still a Herald sync payload")
+        let other = await herald.handleRemoteNotification(["aps": ["alert": "hi"]], deadline: 60)
+        XCTAssertFalse(other)
+    }
+}
+
+/// Answers the first message sync; every later one never finishes (until its task is cancelled).
+final class StallingTransport: HeraldTransport {
+    private let syncs = OSAllocatedUnfairLock(initialState: 0)
+    var messageRequests: Int { syncs.withLock { $0 } }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if request.url?.path.hasSuffix("/sdk/messages") == true {
+            let n = syncs.withLock { count -> Int in
+                count += 1
+                return count
+            }
+            while n > 1 { try await Task.sleep(nanoseconds: 1_000_000_000) }
+        }
+        let body = Data(#"{"data":{"syncedAt":null,"contentCards":[],"inAppMessages":[]}}"#.utf8)
+        return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
     }
 }
