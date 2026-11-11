@@ -3,13 +3,13 @@ import HeraldSDK
 import SwiftUI
 
 /// A banner at the top or bottom edge. A tap performs the first button's action (or dismisses when there
-/// is none); swipe it toward its edge or sideways to dismiss.
+/// is none); swipe it toward its edge (up for a top slideup, down for a bottom one) to dismiss.
 public struct SlideupMessageView: View {
     let message: InAppMessage
     let actions: InAppMessageActions
     @Environment(\.heraldTheme) private var theme
     @Environment(\.colorScheme) private var colorScheme
-    @State private var drag: CGSize = .zero
+    @State private var drag: CGFloat = 0
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     public init(message: InAppMessage, actions: InAppMessageActions) {
@@ -39,18 +39,18 @@ public struct SlideupMessageView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .offset(drag)
+        .offset(y: drag)
         .gesture(
             DragGesture(minimumDistance: 10)
                 .onChanged { value in
                     let dy = value.translation.height
-                    drag = CGSize(width: value.translation.width, height: fromTop ? min(dy, 0) : max(dy, 0))
+                    drag = fromTop ? min(dy, 0) : max(dy, 0)
                 }
                 .onEnded { _ in
-                    if abs(drag.height) > 40 || abs(drag.width) > 120 {
+                    if abs(drag) > 40 {
                         actions.dismiss()
                     } else {
-                        withAnimation(.easeOut(duration: 0.2)) { drag = .zero }
+                        withAnimation(.easeOut(duration: 0.2)) { drag = 0 }
                     }
                 }
         )
