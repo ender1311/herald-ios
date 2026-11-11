@@ -264,6 +264,60 @@ final class CoreBehaviorTests: XCTestCase {
         XCTAssertTrue(reenabled)
     }
 
+    /// I3: disabling sends one push unsubscribe for this device and hides cached cards until re-enabled.
+    func testDisableSendsPushUnsubscribeAndHidesCards() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        for _ in 0..<3 { harness.transport.enqueueMessages(FakeResponse(status: 200, body: try fixtureData("messages"))) }
+        await core.identify(userId: "u1", traits: [:])
+        await core.setUserToken("tok1")
+        await core.setPushToken(hex: "abcd")
+        await core.drain()
+        await core.flushNow()
+        let before = harness.transport.batchRequests.count
+        let shown = await core.visibleCards()
+        XCTAssertFalse(shown.isEmpty)
+
+        await core.setEnabled(false)
+        await core.drain()
+        XCTAssertEqual(harness.transport.batchRequests.count, before + 1, "one best-effort batch")
+        let request = try XCTUnwrap(harness.transport.batchRequests.last)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-herald-user-token"), "tok1")
+        let body = try XCTUnwrap(harness.transport.batchBodies().last?.objectValue)
+        XCTAssertEqual(body["userId"], "u1")
+        let events = try XCTUnwrap(body["events"]?.arrayValue)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events[0].objectValue?["type"], "subscription")
+        XCTAssertEqual(events[0].objectValue?["channel"], "push")
+        XCTAssertEqual(events[0].objectValue?["state"], "unsubscribed")
+        XCTAssertEqual(harness.output.lastCards ?? [], [], "cards are hidden while disabled")
+        let queued = await core.queuedCount
+        XCTAssertEqual(queued, 0, "the unsubscribe is never queued")
+
+        await core.setEnabled(false)
+        await core.drain()
+        XCTAssertEqual(harness.transport.batchRequests.count, before + 1, "already disabled: nothing more")
+
+        await core.setEnabled(true)
+        await core.drain()
+        XCTAssertFalse((harness.output.lastCards ?? []).isEmpty, "cards come back on re-enable")
+    }
+
+    func testWipeDataSendsPushUnsubscribeUnderTheOldDeviceId() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.setPushToken(hex: "abcd")
+        await core.drain()
+        await core.flushNow()
+        let oldDevice = await core.state.deviceId
+        await core.wipeData()
+        await core.drain()
+        let body = try XCTUnwrap(harness.transport.batchBodies().last?.objectValue)
+        XCTAssertEqual(body["deviceId"], .string(oldDevice))
+        XCTAssertEqual(body["events"]?.arrayValue?.first?.objectValue?["state"], "unsubscribed")
+        XCTAssertEqual(harness.output.lastCards ?? [], [])
+    }
+
     func testSessionTimeoutEndsAndStartsSession() async throws {
         let harness = CoreHarness()
         let core = harness.makeCore()

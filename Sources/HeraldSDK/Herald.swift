@@ -175,13 +175,16 @@ public final class Herald: Sendable {
         send { core in core.scheduleFlush() }
     }
 
-    /// Turns all collection, sending and message display on or off. Persisted across launches.
+    /// Turns all collection, sending and message display on or off. Persisted across launches. Turning it
+    /// off first sends one best-effort push unsubscribe for this device (so Herald stops sending it pushes)
+    /// and hides cached content cards until it is turned back on.
     public func setEnabled(_ enabled: Bool) {
         send { core in core.setEnabled(enabled) }
     }
 
-    /// Deletes all SDK data on this device and disables the SDK. Call `setEnabled(true)` to start
-    /// again with a new device id.
+    /// Deletes all SDK data on this device, cached cards included, and disables the SDK. First sends one
+    /// best-effort push unsubscribe for this device, as `setEnabled(false)` does. Call `setEnabled(true)`
+    /// to start again with a new device id.
     public func wipeData() {
         send { core in core.wipeData() }
     }

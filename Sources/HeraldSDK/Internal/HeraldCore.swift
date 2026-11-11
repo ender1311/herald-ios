@@ -313,7 +313,9 @@ actor HeraldCore {
         publishCards()
     }
 
+    /// Empty while the SDK is disabled: cached cards stay hidden until `setEnabled(true)`.
     func visibleCards() -> [ContentCard] {
+        guard state.enabled else { return [] }
         let date = now()
         return cards.filter { !$0.dismissed && !$0.isExpired(at: date) && !state.dismissedCardIds.contains($0.id) }
     }
@@ -561,8 +563,10 @@ actor HeraldCore {
     // MARK: - Enable / wipe
 
     func setEnabled(_ enabled: Bool) {
+        if !enabled { sendPushUnsubscribe() }
         state.enabled = enabled
         persist()
+        publishCards()
         if enabled {
             if isForeground { appDidBecomeActive() }
         } else {
@@ -571,9 +575,35 @@ actor HeraldCore {
         }
     }
 
+    /// Before the SDK goes quiet, tells Herald to stop pushing to this device: one `subscription push
+    /// unsubscribed` batch, sent once in the background and never queued or retried (best effort).
+    private func sendPushUnsubscribe() {
+        guard state.enabled, state.pushToken != nil else { return }
+        var event: [String: HeraldValue] = [
+            "id": .string(makeId()), "type": "subscription", "timestamp": .string(WireDate.format(now())),
+            "channel": "push", "state": "unsubscribed",
+        ]
+        if let id = state.session?.id { event["sessionId"] = .string(id) }
+        let userId = state.userId
+        let deviceId = state.deviceId
+        // Built now: wipeData() replaces the device id and token right after this returns.
+        var request = makeRequest(path: "api/v1/sdk/batch", userId: userId)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let batch = [QueuedEvent(userId: userId, event: event)]
+        let headers = request
+        spawn { core in
+            guard let (body, _) = await core.batchBody(batch, userId: userId, dropped: 0, deviceId: deviceId) else { return }
+            var request = headers
+            request.httpBody = body
+            _ = try? await core.transport.send(request)
+        }
+    }
+
     /// Deletes every file and in-memory record, gives the device a new id and leaves the SDK disabled
     /// until `setEnabled(true)`.
     func wipeData() {
+        sendPushUnsubscribe()
         flushTimer?.cancel()
         flushTimer = nil
         queue.removeAll()
@@ -727,13 +757,15 @@ actor HeraldCore {
 
     /// Encodes the batch, halving it until it fits 512 KB. Returns the body and the events it holds
     /// (the rest stay queued), or nil when even one event is too large.
-    private func batchBody(_ batch: [QueuedEvent], userId: String?, dropped: Int) async -> (Data, [QueuedEvent])? {
+    private func batchBody(
+        _ batch: [QueuedEvent], userId: String?, dropped: Int, deviceId: String? = nil
+    ) async -> (Data, [QueuedEvent])? {
         let context = DeviceContext.build(await deviceInfo.current(), collection: configuration.deviceDataCollection)
         var events = batch
         while !events.isEmpty {
             let payload: HeraldValue = [
                 "sdk": ["name": .string(Self.sdkName), "version": .string(Herald.sdkVersion)],
-                "deviceId": .string(state.deviceId),
+                "deviceId": .string(deviceId ?? state.deviceId),
                 "userId": userId.map(HeraldValue.string) ?? .null,
                 "sentAt": .string(WireDate.format(now())),
                 "dropped": .number(Double(dropped)),
