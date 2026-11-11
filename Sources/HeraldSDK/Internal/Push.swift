@@ -55,8 +55,9 @@ struct HeraldPushPayload: Equatable {
     let deeplink: URL?
     let actions: [Action]
 
-    /// Nil when the push is not from Herald (neither a decision id nor a message id).
+    /// Nil when the push is not from Herald (neither a decision id nor a message id), or is a sync push.
     init?(userInfo: [AnyHashable: Any]) {
+        guard userInfo[Herald.syncKey] as? String != "1" else { return nil }
         decisionId = Self.nonEmpty(userInfo[Self.decisionKey])
         messageId = Self.nonEmpty(userInfo[Self.messageKey])
         guard decisionId != nil || messageId != nil else { return nil }

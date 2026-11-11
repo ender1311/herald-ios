@@ -37,6 +37,10 @@
 	<string>$(HERALD_USER_TOKEN)</string>
 	<key>HeraldEndpoint</key>
 	<string>$(HERALD_ENDPOINT)</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>

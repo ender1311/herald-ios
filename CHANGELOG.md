@@ -2,6 +2,19 @@
 
 Releases follow the policy on [Versioning and support](https://beaconfrontier.com/herald/docs/operations/versioning-and-support). iOS and Android share version numbers.
 
+## 0.2.0
+
+### Added
+
+- Sync push handling. Herald sends a silent push (`herald_sync` = "1") after it writes new content cards or in-app messages for a user; the SDK refreshes them in the background with the usual ETag check. A sync push never shows a notification and is never logged as a push open, and one that arrives within 30 seconds of the last one is skipped.
+  - iOS: `Herald.shared.handleRemoteNotification(_:)`, called from `application(_:didReceiveRemoteNotification:fetchCompletionHandler:)`; it returns true for a Herald sync push (complete with `.newData`) and false otherwise. Needs the Remote notifications background mode.
+  - Android: herald-fcm's `HeraldMessagingService` handles sync pushes on its own. Apps with their own `FirebaseMessagingService` call `Herald.handleRemoteMessage(data)` from `onMessageReceived`.
+
+### Fixed
+
+- iOS: `HeraldNotificationService` adds the push's `herald_actions` buttons when `aps.category` is a Herald category (an id starting with `herald.`), not only when `aps.category` is absent. A category the app registered itself is still kept.
+- Push payloads that carry `herald_sync` are never treated as a push to open (iOS `handleNotificationResponse`, Android `handleNotificationIntent`).
+
 ## 0.1.0
 
 The first public release. iOS 16 and later; Android 8.0 (API level 26) and later.

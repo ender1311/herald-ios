@@ -106,6 +106,12 @@ final class RichPushTests: XCTestCase {
 final class ActionCategoryTests: XCTestCase {
     private let json = #"[{"id":"a1","title":"Open","deeplink":"lumen://a"},{"id":"a2","title":"Later"},{"id":""},{"id":"a3","title":"C"},{"id":"a4","title":"D"}]"#
 
+    func testReplacesOnlyHeraldCategories() {
+        XCTAssertTrue(HeraldRichPush.replacesCategory(""))
+        XCTAssertTrue(HeraldRichPush.replacesCategory("herald.actions"))
+        XCTAssertFalse(HeraldRichPush.replacesCategory("workout_reminder"))
+    }
+
     func testParsesActions() {
         XCTAssertEqual(HeraldRichPush.actions(json).map(\.id), ["a1", "a2", "a3"])
         XCTAssertEqual(HeraldRichPush.actions([["id": "x", "title": "X"]]).map(\.title), ["X"])

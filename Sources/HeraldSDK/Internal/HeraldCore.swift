@@ -48,6 +48,9 @@ actor HeraldCore {
     private let bundleId: String
     /// Child tasks (flush, sync, output), tracked so tests can wait for them.
     private var inFlight: [UUID: Task<Void, Never>] = [:]
+    /// When the last sync push refreshed; a sync push within `syncPushDebounce` of it is skipped.
+    private var lastSyncPushAt: Date?
+    static let syncPushDebounce: TimeInterval = 30
 
     init(
         configuration: HeraldConfiguration,
@@ -758,6 +761,22 @@ actor HeraldCore {
         spawn { core in
             await core.syncMessages()
             if let trigger { core.fire(trigger) }
+        }
+    }
+
+    /// A Herald sync push: refreshes (with the usual ETag) unless another sync push did within
+    /// `syncPushDebounce`. Never shows anything or logs a push interaction. Calls `done` when finished.
+    func syncFromPush(done: @escaping @Sendable () -> Void) {
+        let date = now()
+        guard state.enabled else { return done() }
+        if let last = lastSyncPushAt, date >= last, date.timeIntervalSince(last) < Self.syncPushDebounce {
+            Log.debug("Sync push skipped: another one refreshed less than \(Int(Self.syncPushDebounce)) s ago")
+            return done()
+        }
+        lastSyncPushAt = date
+        spawn { core in
+            await core.syncMessages()
+            done()
         }
     }
 

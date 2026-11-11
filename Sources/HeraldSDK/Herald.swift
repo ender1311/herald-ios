@@ -15,7 +15,7 @@ import UserNotifications
 /// the host app: invalid input is logged and skipped.
 public final class Herald: Sendable {
     public static let shared = Herald()
-    public static let sdkVersion = "0.1.0"
+    public static let sdkVersion = "0.2.0"
     /// Calls kept before `configure` runs (and while the core is busy); newer calls are dropped beyond it.
     static let maxBufferedCalls = 1_000
 
@@ -86,10 +86,14 @@ public final class Herald: Sendable {
         #endif
     }
 
-    func send(_ command: @escaping Command) {
+    /// Returns false when the call was dropped.
+    @discardableResult
+    func send(_ command: @escaping Command) -> Bool {
         if case .dropped = commands.yield(command) {
             Log.warning("Herald call dropped: more than \(Self.maxBufferedCalls) calls are waiting (is Herald.configure called?)")
+            return false
         }
+        return true
     }
 
     // MARK: - Identity
@@ -251,6 +255,39 @@ public final class Herald: Sendable {
         return true
     }
     #endif
+
+    /// The data key of a Herald sync push (value "1").
+    static let syncKey = "herald_sync"
+
+    /// Handles a Herald sync push: a silent push (`content-available: 1`, no alert) Herald sends after it
+    /// writes new cards or in-app messages for the user. Refreshes cards and in-app messages (with the
+    /// usual ETag check; nothing happens while the SDK is disabled) and returns true when the push was a
+    /// Herald sync (`herald_sync` is "1"), false otherwise. A sync push never shows anything and is never
+    /// logged as a push open. One that arrives within 30 s of the last refreshed one is skipped.
+    /// Main actor, like the app delegate it is called from.
+    ///
+    /// Wiring: turn on the Remote notifications background mode (`UIBackgroundModes` contains
+    /// `remote-notification`), then forward from your app delegate:
+    /// ```swift
+    /// func application(
+    ///     _ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+    ///     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    /// ) {
+    ///     Task {
+    ///         let synced = await Herald.shared.handleRemoteNotification(userInfo)
+    ///         completionHandler(synced ? .newData : .noData)
+    ///     }
+    /// }
+    /// ```
+    /// Without the background mode, iOS does not wake the app and new messages arrive at the next session.
+    @MainActor public func handleRemoteNotification(_ userInfo: [AnyHashable: Any]) async -> Bool {
+        guard userInfo[Self.syncKey] as? String == "1" else { return false }
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            let queued = send { core in core.syncFromPush { done.resume() } }
+            if !queued { done.resume() }
+        }
+        return true
+    }
 
     // MARK: - Content cards
 

@@ -45,6 +45,18 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         Herald.shared.setPushToken(deviceToken)
     }
 
+    // Herald sync pushes (silent, `herald_sync`) refresh cards and in-app messages in the background.
+    // Needs the remote-notification background mode (UIBackgroundModes in Info.plist).
+    func application(
+        _ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        Task {
+            let synced = await Herald.shared.handleRemoteNotification(userInfo)
+            completionHandler(synced ? .newData : .noData)
+        }
+    }
+
     // Logs the open (or button tap) and opens the push's deep link.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,

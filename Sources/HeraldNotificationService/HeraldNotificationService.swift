@@ -8,7 +8,7 @@ import UserNotifications
 /// `image_url` key when the push has an image (`image` is read too, as on Android). Optional
 /// `herald_actions` (up to 3 buttons, `[{"id","title","deeplink"?}]`, the same key the Android SDK
 /// reads) become a notification category registered on the fly, unless the payload already names one
-/// in `aps.category`. This module depends on Foundation and UserNotifications only, so it links into an
+/// of the app's own categories in `aps.category` (an id starting with `herald.` is Herald's and is replaced). This module depends on Foundation and UserNotifications only, so it links into an
 /// app extension (HeraldSDK does not: it uses `UIApplication`).
 ///
 /// Subclass it as the extension's principal class:
@@ -81,9 +81,9 @@ public enum HeraldRichPush {
     }
 
     /// Registers a category for the push's `herald_actions` and sets it on the content. Unchanged when
-    /// there are no actions or `aps.category` is already set.
+    /// there are no actions or `aps.category` names one of the app's own categories.
     public static func applyActions(to content: UNNotificationContent) async -> UNNotificationContent {
-        guard content.categoryIdentifier.isEmpty else { return content }
+        guard replacesCategory(content.categoryIdentifier) else { return content }
         let buttons = actions(content.userInfo[actionsKey])
         guard !buttons.isEmpty, let mutable = content.mutableCopy() as? UNMutableNotificationContent else { return content }
         let center = UNUserNotificationCenter.current()
@@ -96,6 +96,12 @@ public enum HeraldRichPush {
         }
         mutable.categoryIdentifier = category
         return mutable
+    }
+
+    /// True when `aps.category` is unset or Herald's (`herald.` prefix, which Herald's sender may set
+    /// alongside `herald_actions`); an app's own category is kept.
+    static func replacesCategory(_ identifier: String) -> Bool {
+        identifier.isEmpty || identifier.hasPrefix("herald.")
     }
 
     /// The category id for `buttons` and the new category set (nil when an identical category is
