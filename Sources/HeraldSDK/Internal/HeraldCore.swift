@@ -50,6 +50,7 @@ actor HeraldCore {
     private(set) var isForeground = false
     private var flushTimer: Task<Void, Never>?
     private var intervalRetry: Task<Void, Never>?
+    private var expiryRefresh: Task<Void, Never>?
     private var activityPersistedAt: Date?
     private let bundleId: String
     /// Child tasks (flush, sync, output), tracked so tests can wait for them.
@@ -95,7 +96,9 @@ actor HeraldCore {
 
     /// Publishes the cached cards once the store is listening.
     func start() async {
-        await output.cardsChanged(visibleCards())
+        let visible = visibleCards()
+        scheduleExpiryRefresh(visible)
+        await output.cardsChanged(visible)
         // A launch only asks for the token; it never changes the push subscription.
         if state.enabled, state.pushToken == nil { restorePushIfAuthorized(resubscribe: false) }
     }
@@ -337,7 +340,21 @@ actor HeraldCore {
 
     private func publishCards() {
         let visible = visibleCards()
+        scheduleExpiryRefresh(visible)
         spawn { core in await core.output.cardsChanged(visible) }
+    }
+
+    /// Republishes when the soonest visible card expires, so an open feed drops it without a sync.
+    private func scheduleExpiryRefresh(_ visible: [ContentCard]) {
+        expiryRefresh?.cancel()
+        guard let soonest = visible.compactMap(\.expiresAt).min() else { return }
+        let seconds = max(soonest.timeIntervalSince(now()), 0)
+        // Not tracked by `drain()`: it sleeps in real time.
+        expiryRefresh = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(min(seconds, 365 * 86_400) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.publishCards()
+        }
     }
 
     // MARK: - In-app messages

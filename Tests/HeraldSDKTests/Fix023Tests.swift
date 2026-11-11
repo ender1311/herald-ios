@@ -91,4 +91,20 @@ final class Fix023Tests: XCTestCase {
         await relaunched.flushNow()
         XCTAssertEqual(try impressions(harness), [card.id, card.id])
     }
+
+    // D4: an expired card leaves the published list at its expiry time, without a sync.
+    func testExpiredCardIsUnpublishedAtExpiry() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        let expiring = ContentCard(id: "soon", type: .classic, createdAt: t0, expiresAt: t0.addingTimeInterval(0.2))
+        let lasting = ContentCard(id: "stays", type: .classic, createdAt: t0)
+        await core.debugApply(MessagesPayload(syncedAt: nil, contentCards: [expiring, lasting], inAppMessages: []))
+        await core.drain()
+        XCTAssertEqual(harness.output.lastCards?.map(\.id), ["soon", "stays"])
+        harness.clock.advance(1)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        await core.drain()
+        XCTAssertEqual(harness.output.lastCards?.map(\.id), ["stays"])
+        XCTAssertEqual(harness.transport.messageRequests.count, 0, "no sync")
+    }
 }
