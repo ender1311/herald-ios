@@ -1,9 +1,21 @@
 import Foundation
+#if os(iOS)
+import UIKit
+#endif
 
 enum PushToken {
     /// APNs device token as lowercase hex, the form APNs and Herald expect.
     static func hex(_ token: Data) -> String {
         token.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+enum PushRegistrar {
+    /// Registers with APNs; iOS hands the token to the app's `didRegisterForRemoteNotifications…`.
+    @Sendable static func register() async {
+        #if os(iOS)
+        await MainActor.run { UIApplication.shared.registerForRemoteNotifications() }
+        #endif
     }
 }
 

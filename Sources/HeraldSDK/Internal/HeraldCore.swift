@@ -27,6 +27,8 @@ actor HeraldCore {
     private let now: @Sendable () -> Date
     private let random: @Sendable () -> Double
     private let makeId: @Sendable () -> String
+    /// Asks iOS for the APNs token again; it comes back through the app's `setPushToken` forwarding.
+    private let registerForPush: @Sendable () async -> Void
 
     private(set) var state: PersistedState
     private let queue: EventQueue
@@ -65,9 +67,11 @@ actor HeraldCore {
         now: @escaping @Sendable () -> Date = { Date() },
         random: @escaping @Sendable () -> Double = { Double.random(in: 0...1) },
         makeId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
-        bundleId: String = Bundle.main.bundleIdentifier ?? ""
+        bundleId: String = Bundle.main.bundleIdentifier ?? "",
+        registerForPush: @escaping @Sendable () async -> Void = PushRegistrar.register
     ) {
         self.bundleId = bundleId
+        self.registerForPush = registerForPush
         self.configuration = configuration
         self.storage = storage
         self.transport = transport
@@ -92,6 +96,8 @@ actor HeraldCore {
     /// Publishes the cached cards once the store is listening.
     func start() async {
         await output.cardsChanged(visibleCards())
+        // A launch only asks for the token; it never changes the push subscription.
+        if state.enabled, state.pushToken == nil { restorePushIfAuthorized(resubscribe: false) }
     }
 
     private var userKey: String { state.userId ?? Self.anonymousKey }
@@ -579,17 +585,22 @@ actor HeraldCore {
         }
     }
 
-    /// Undoes the unsubscribe sent when the SDK was turned off: when the device still has its push token
-    /// and notification permission, queues the token and a `subscription push subscribed` for the next batch.
-    private func restorePushIfAuthorized() {
-        guard state.pushToken != nil else { return }
+    /// Undoes the unsubscribe sent when the SDK was turned off: when notification permission is still
+    /// granted, queues the push token and a `subscription push subscribed` for the next batch. With no
+    /// stored token (after `wipeData()`, or a launch whose registration never finished) it asks iOS for
+    /// the token again; the subscription waits for it, as any push opt-in does. `resubscribe` false
+    /// (launch) only asks for a missing token.
+    private func restorePushIfAuthorized(resubscribe: Bool = true) {
         spawn { core in
             let authorization = await core.deviceInfo.current().pushAuthorization ?? ""
-            guard ["authorized", "provisional", "ephemeral"].contains(authorization), core.state.enabled,
-                let token = core.state.pushToken
-            else { return }
-            core.enqueuePushToken(token)
-            core.setSubscription(.push, .subscribed)
+            guard ["authorized", "provisional", "ephemeral"].contains(authorization), core.state.enabled else { return }
+            if let token = core.state.pushToken {
+                core.enqueuePushToken(token)
+                core.setSubscription(.push, .subscribed)
+            } else {
+                if resubscribe { core.setSubscription(.push, .subscribed) }
+                await core.registerForPush()
+            }
         }
     }
 

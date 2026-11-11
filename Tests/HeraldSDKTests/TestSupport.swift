@@ -157,6 +157,8 @@ struct CoreHarness {
     let output = RecordingOutput()
     let clock = TestClock()
     let ids = SequentialIds()
+    /// Stands in for `UIApplication.registerForRemoteNotifications`.
+    var registerForPush: @Sendable () async -> Void = {}
 
     init(directory: URL = tempDirectory()) {
         self.directory = directory
@@ -173,9 +175,17 @@ struct CoreHarness {
         return HeraldCore(
             configuration: configuration, storage: Storage(directory: directory), transport: transport,
             deviceInfo: deviceInfo, output: output,
-            now: { clock.now }, random: { 1 }, makeId: { ids.next() }, bundleId: "com.lumen.app"
+            now: { clock.now }, random: { 1 }, makeId: { ids.next() }, bundleId: "com.lumen.app",
+            registerForPush: registerForPush
         )
     }
+}
+
+/// Counts calls, standing in for `UIApplication.registerForRemoteNotifications`.
+final class CallCounter: Sendable {
+    private let value = OSAllocatedUnfairLock(initialState: 0)
+    var count: Int { value.withLock { $0 } }
+    @Sendable func call() async { value.withLock { $0 += 1 } }
 }
 
 /// Replaces every leaf with its JSON type name, so two documents compare by shape.
