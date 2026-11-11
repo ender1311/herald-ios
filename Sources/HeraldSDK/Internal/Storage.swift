@@ -91,9 +91,15 @@ struct Storage {
     private var messagesURL: URL { directory.appendingPathComponent("messages.json") }
     /// The opt-out lives in its own marker file (as on Android), so an unreadable state.json can never
     /// re-enable a disabled SDK.
-    private var disabledMarkerURL: URL { directory.appendingPathComponent("state.json.disabled") }
+    private var disabledMarkerURL: URL { Self.disabledMarkerURL(in: directory) }
+    private static func disabledMarkerURL(in directory: URL) -> URL { directory.appendingPathComponent("state.json.disabled") }
 
-    var isDisabledMarked: Bool { FileManager.default.fileExists(atPath: disabledMarkerURL.path) }
+    var isDisabledMarked: Bool { Self.isDisabledMarked(in: directory) }
+
+    /// One `stat`, no directory creation: safe and cheap from any thread.
+    static func isDisabledMarked(in directory: URL) -> Bool {
+        FileManager.default.fileExists(atPath: disabledMarkerURL(in: directory).path)
+    }
 
     func loadState() -> PersistedState? {
         guard let data = try? Data(contentsOf: stateURL) else { return nil }

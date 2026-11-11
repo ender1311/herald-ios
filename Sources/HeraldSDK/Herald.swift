@@ -30,6 +30,9 @@ public final class Herald: Sendable {
     private let commands: AsyncStream<Command>.Continuation
     private let stream: AsyncStream<Command>
     private let configured = OSAllocatedUnfairLock(initialState: false)
+    /// The SDK's on/off state as of the latest accepted `setEnabled` / `wipeData` call (commands apply in
+    /// order, so that is where the SDK ends up), else as loaded by the core; nil until either happens.
+    private let enabledState = OSAllocatedUnfairLock<Bool?>(initialState: nil)
 
     init() {
         contentCards = ContentCardStore()
@@ -74,6 +77,8 @@ public final class Herald: Sendable {
                 configuration: configuration, storage: storage(), transport: transport, deviceInfo: deviceInfo,
                 output: bridge
             )
+            let loaded = await core.state.enabled
+            self.enabledState.withLock { if $0 == nil { $0 = loaded } }
             await core.start()
             for await command in stream {
                 await command(core)
@@ -177,16 +182,25 @@ public final class Herald: Sendable {
 
     /// Turns all collection, sending and message display on or off. Persisted across launches. Turning it
     /// off first sends one best-effort push unsubscribe for this device (so Herald stops sending it pushes)
-    /// and hides cached content cards until it is turned back on.
+    /// and hides cached content cards until it is turned back on. Turning it back on re-sends the stored
+    /// push token and a push `subscribed` when notification permission is still granted.
     public func setEnabled(_ enabled: Bool) {
-        send { core in core.setEnabled(enabled) }
+        if send({ core in core.setEnabled(enabled) }) { enabledState.withLock { $0 = enabled } }
+    }
+
+    /// Whether the SDK is on: false after `setEnabled(false)` or `wipeData()` until `setEnabled(true)`.
+    /// Reflects those calls at once (before they are applied) and, before `configure` has loaded the
+    /// state, reads the opt-out from disk. Cheap and safe from any thread.
+    public var isEnabled: Bool {
+        if let known = enabledState.withLock({ $0 }) { return known }
+        return !Storage.isDisabledMarked(in: Storage.defaultDirectory())
     }
 
     /// Deletes all SDK data on this device, cached cards included, and disables the SDK. First sends one
     /// best-effort push unsubscribe for this device, as `setEnabled(false)` does. Call `setEnabled(true)`
     /// to start again with a new device id.
     public func wipeData() {
-        send { core in core.wipeData() }
+        if send({ core in core.wipeData() }) { enabledState.withLock { $0 = false } }
     }
 
     // MARK: - Push

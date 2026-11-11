@@ -563,15 +563,31 @@ actor HeraldCore {
     // MARK: - Enable / wipe
 
     func setEnabled(_ enabled: Bool) {
+        let wasEnabled = state.enabled
         if !enabled { sendPushUnsubscribe() }
         state.enabled = enabled
         persist()
         publishCards()
         if enabled {
+            if !wasEnabled { restorePushIfAuthorized() }
             if isForeground { appDidBecomeActive() }
         } else {
             flushTimer?.cancel()
             flushTimer = nil
+        }
+    }
+
+    /// Undoes the unsubscribe sent when the SDK was turned off: when the device still has its push token
+    /// and notification permission, queues the token and a `subscription push subscribed` for the next batch.
+    private func restorePushIfAuthorized() {
+        guard state.pushToken != nil else { return }
+        spawn { core in
+            let authorization = await core.deviceInfo.current().pushAuthorization ?? ""
+            guard ["authorized", "provisional", "ephemeral"].contains(authorization), core.state.enabled,
+                let token = core.state.pushToken
+            else { return }
+            core.enqueuePushToken(token)
+            core.setSubscription(.push, .subscribed)
         }
     }
 

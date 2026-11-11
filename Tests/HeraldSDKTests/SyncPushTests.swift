@@ -95,6 +95,28 @@ final class SyncPushTests: XCTestCase {
     }
 }
 
+/// Fix round 1: `Herald.shared.isEnabled` follows setEnabled / wipeData at once and the loaded state.
+final class IsEnabledTests: XCTestCase {
+    func testIsEnabledFollowsCallsAndLoadedState() async throws {
+        let directory = tempDirectory()
+        let core = CoreHarness(directory: directory).makeCore()
+        await core.setEnabled(false)
+        await core.drain()
+
+        let herald = Herald()
+        herald.start(
+            HeraldConfiguration(appKey: "pk_live", endpoint: URL(string: "https://h.example.com")!),
+            storage: { Storage(directory: directory) }, transport: FakeTransport(), deviceInfo: FixtureDeviceInfo()
+        )
+        for _ in 0..<200 where herald.isEnabled { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertFalse(herald.isEnabled, "the opt-out persisted on disk is loaded")
+        herald.setEnabled(true)
+        XCTAssertTrue(herald.isEnabled, "reflects the call at once")
+        herald.wipeData()
+        XCTAssertFalse(herald.isEnabled)
+    }
+}
+
 /// Answers the first message sync; every later one never finishes (until its task is cancelled).
 final class StallingTransport: HeraldTransport {
     private let syncs = OSAllocatedUnfairLock(initialState: 0)

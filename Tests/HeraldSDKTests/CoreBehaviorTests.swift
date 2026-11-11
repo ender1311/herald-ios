@@ -303,6 +303,60 @@ final class CoreBehaviorTests: XCTestCase {
         XCTAssertFalse((harness.output.lastCards ?? []).isEmpty, "cards come back on re-enable")
     }
 
+    private func types(_ body: HeraldValue?) -> [String] {
+        body?.objectValue?["events"]?.arrayValue?.compactMap { $0.objectValue?["type"]?.stringValue } ?? []
+    }
+
+    /// Fix round 1: re-enabling with a stored token and granted permission undoes the unsubscribe.
+    func testReEnableResendsPushTokenAndSubscribed() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.identify(userId: "u1", traits: [:])
+        await core.setUserToken("tok1")
+        await core.setPushToken(hex: "abcd")
+        await core.drain()
+        await core.flushNow()
+        await core.setEnabled(false)
+        await core.drain()
+        let before = harness.transport.batchRequests.count
+
+        await core.setEnabled(true)
+        await core.drain()
+        await core.flushNow()
+        XCTAssertEqual(harness.transport.batchRequests.count, before + 1)
+        let body = try harness.transport.batchBodies().last
+        let events = body?.objectValue?["events"]?.arrayValue?.compactMap(\.objectValue) ?? []
+        let token = try XCTUnwrap(events.firstIndex { $0["type"] == "push_token" })
+        let subscription = try XCTUnwrap(events.firstIndex { $0["type"] == "subscription" })
+        XCTAssertLessThan(token, subscription, "push_token first")
+        XCTAssertEqual(events[token]["token"], "abcd")
+        XCTAssertEqual(events[subscription]["channel"], "push")
+        XCTAssertEqual(events[subscription]["state"], "subscribed")
+
+        await core.setEnabled(true)
+        await core.drain()
+        let queued = await core.queuedCount
+        XCTAssertEqual(queued, 0, "already enabled: nothing re-sent")
+    }
+
+    func testReEnableDoesNotRestorePushWithoutPermission() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore(deviceInfo: DeniedPushDeviceInfo())
+        await core.setPushToken(hex: "abcd")
+        await core.drain()
+        await core.flushNow()
+        await core.setEnabled(false)
+        await core.setEnabled(true)
+        await core.drain()
+        await core.flushNow()
+        let all = try harness.transport.batchBodies().flatMap(types)
+        XCTAssertEqual(all.filter { $0 == "push_token" }.count, 1, "only the original token")
+        let states = try harness.transport.batchBodies()
+            .flatMap { $0.objectValue?["events"]?.arrayValue ?? [] }
+            .compactMap { $0.objectValue?["state"]?.stringValue }
+        XCTAssertFalse(states.contains("subscribed"))
+    }
+
     func testWipeDataSendsPushUnsubscribeUnderTheOldDeviceId() async throws {
         let harness = CoreHarness()
         let core = harness.makeCore()

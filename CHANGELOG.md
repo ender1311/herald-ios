@@ -4,11 +4,15 @@ Releases follow the policy on [Versioning and support](https://beaconfrontier.co
 
 ## 0.2.2
 
+### Added
+
+- `Herald.shared.isEnabled`: whether the SDK is on. Reflects `setEnabled` / `wipeData` at once; safe from any thread.
+
 ### Fixed
 
 - Events recorded between `identify` and `setUserToken` are no longer lost. A 401 on a signed-in user's batch keeps it on the device, logs `Herald needs a user token: call setUserToken` once and holds that user's events until `setUserToken` is called, which sends them. Anonymous events keep flowing; the 1,000-event queue cap still applies.
 - A corrupt or unreadable `state.json` no longer re-enables an opted-out SDK: the opt-out now lives in its own marker file (as on Android). An existing opt-out is migrated on first launch.
-- `setEnabled(false)` and `wipeData()` first send one best-effort `subscription` push `unsubscribed` event for the device (only when it has a push token), so Herald stops sending it pushes. Cached content cards are hidden while disabled and come back on `setEnabled(true)`.
+- `setEnabled(false)` and `wipeData()` first send one best-effort `subscription` push `unsubscribed` event for the device (only when it has a push token), so Herald stops sending it pushes. Cached content cards are hidden while disabled and come back on `setEnabled(true)`, which also re-sends the stored push token and a push `subscribed` event when notification permission is still granted, so pushes resume.
 - HeraldUI: an in-app message that sets `backgroundColor` without `textColor` (or `buttonColor` without `buttonTextColor`) gets black or white text by WCAG contrast instead of the theme's text color, so it stays readable in dark mode.
 - `handleRemoteNotification` returns within 25 seconds even if the refresh has not finished, and at once (still `true` for a Herald sync push) before `configure` has run.
 

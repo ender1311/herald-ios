@@ -106,6 +106,15 @@ struct FixtureDeviceInfo: DeviceInfoProvider {
     }
 }
 
+/// `FixtureDeviceInfo` with notifications denied.
+struct DeniedPushDeviceInfo: DeviceInfoProvider {
+    func current() async -> DeviceInfo {
+        var info = await FixtureDeviceInfo().current()
+        info.pushAuthorization = "denied"
+        return info
+    }
+}
+
 /// Records card updates; answers in-app offers with a fixed choice (nil = no presenter).
 final class RecordingOutput: CoreOutput {
     private struct State {
@@ -153,7 +162,9 @@ struct CoreHarness {
         self.directory = directory
     }
 
-    func makeCore(_ configure: (inout HeraldConfiguration) -> Void = { _ in }) -> HeraldCore {
+    func makeCore(
+        deviceInfo: DeviceInfoProvider = FixtureDeviceInfo(), _ configure: (inout HeraldConfiguration) -> Void = { _ in }
+    ) -> HeraldCore {
         var configuration = HeraldConfiguration(appKey: "pk_test", endpoint: URL(string: "https://herald.example.com")!)
         configuration.flushAt = 100_000  // tests flush explicitly
         configure(&configuration)
@@ -161,7 +172,7 @@ struct CoreHarness {
         let ids = ids
         return HeraldCore(
             configuration: configuration, storage: Storage(directory: directory), transport: transport,
-            deviceInfo: FixtureDeviceInfo(), output: output,
+            deviceInfo: deviceInfo, output: output,
             now: { clock.now }, random: { 1 }, makeId: { ids.next() }, bundleId: "com.lumen.app"
         )
     }
