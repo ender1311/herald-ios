@@ -75,6 +75,7 @@ actor HeraldCore {
         self.random = random
         self.makeId = makeId
         state = storage.loadState() ?? PersistedState(deviceId: UUID().uuidString.lowercased())
+        if storage.isDisabledMarked { state.enabled = false }
         queue = EventQueue(fileURL: storage.queueURL)
         engine = InAppEngine(minimumInterval: configuration.inAppMinimumInterval)
         engine.lastShown = state.lastShown[state.userId ?? Self.anonymousKey] ?? [:]

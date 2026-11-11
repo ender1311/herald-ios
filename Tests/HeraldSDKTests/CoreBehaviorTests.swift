@@ -244,6 +244,26 @@ final class CoreBehaviorTests: XCTestCase {
         XCTAssertNil(relaunchedState.userId)
     }
 
+    /// I2: a corrupt or unreadable state.json must not re-enable an opted-out SDK.
+    func testCorruptStateKeepsTheOptOut() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.setEnabled(false)
+        await core.drain()
+        let stateURL = harness.directory.appendingPathComponent("state.json")
+        try Data("{not json".utf8).write(to: stateURL)
+        let relaunched = harness.makeCore()
+        let enabled = await relaunched.state.enabled
+        XCTAssertFalse(enabled, "the opt-out marker wins over an unreadable state file")
+        try FileManager.default.removeItem(at: stateURL)
+        let again = await harness.makeCore().state.enabled
+        XCTAssertFalse(again, "a missing state file keeps it disabled too")
+
+        await harness.makeCore().setEnabled(true)
+        let reenabled = await harness.makeCore().state.enabled
+        XCTAssertTrue(reenabled)
+    }
+
     func testSessionTimeoutEndsAndStartsSession() async throws {
         let harness = CoreHarness()
         let core = harness.makeCore()

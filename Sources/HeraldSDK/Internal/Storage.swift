@@ -89,6 +89,11 @@ struct Storage {
     var queueURL: URL { directory.appendingPathComponent("events.jsonl") }
     private var stateURL: URL { directory.appendingPathComponent("state.json") }
     private var messagesURL: URL { directory.appendingPathComponent("messages.json") }
+    /// The opt-out lives in its own marker file (as on Android), so an unreadable state.json can never
+    /// re-enable a disabled SDK.
+    private var disabledMarkerURL: URL { directory.appendingPathComponent("state.json.disabled") }
+
+    var isDisabledMarked: Bool { FileManager.default.fileExists(atPath: disabledMarkerURL.path) }
 
     func loadState() -> PersistedState? {
         guard let data = try? Data(contentsOf: stateURL) else { return nil }
@@ -96,6 +101,11 @@ struct Storage {
     }
 
     func saveState(_ state: PersistedState) {
+        if state.enabled {
+            try? FileManager.default.removeItem(at: disabledMarkerURL)
+        } else if !isDisabledMarked, !FileManager.default.createFile(atPath: disabledMarkerURL.path, contents: Data()) {
+            Log.error("Could not save the opt-out marker")
+        }
         do {
             try JSONEncoder().encode(state).write(to: stateURL, options: .atomic)
         } catch {
@@ -117,6 +127,7 @@ struct Storage {
         }
     }
 
+    /// Keeps the opt-out marker: a wipe leaves the SDK disabled.
     func wipe() {
         for url in [queueURL, stateURL, messagesURL] {
             try? FileManager.default.removeItem(at: url)
