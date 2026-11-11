@@ -107,4 +107,39 @@ final class Fix023Tests: XCTestCase {
         XCTAssertEqual(harness.output.lastCards?.map(\.id), ["stays"])
         XCTAssertEqual(harness.transport.messageRequests.count, 0, "no sync")
     }
+
+    // D8: once the server has refused an identified sync without a token, identified syncs wait for
+    // setUserToken instead of collecting another 401.
+    func testIdentifiedSyncWaitsForTokenWhenVerificationIsRequired() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        harness.transport.enqueueMessages(FakeResponse(status: 401, body: Data(#"{"error":"Invalid user token"}"#.utf8)))
+        await core.identify(userId: "u1", traits: [:])
+        await core.drain()
+        let required = await core.state.userTokenRequired
+        XCTAssertTrue(required)
+        await core.setUserToken("tok1")
+        await core.drain()
+        XCTAssertEqual(harness.transport.messageRequests.last?.value(forHTTPHeaderField: "x-herald-user-token"), "tok1")
+
+        let before = harness.transport.messageRequests.count
+        await core.identify(userId: "u2", traits: [:])  // a switch: new session, no token yet
+        await core.syncMessages()
+        await core.drain()
+        XCTAssertEqual(harness.transport.messageRequests.count, before, "no request without the token")
+        await core.setUserToken("tok2")
+        await core.drain()
+        XCTAssertEqual(harness.transport.messageRequests.count, before + 1)
+        XCTAssertEqual(harness.transport.messageRequests.last?.value(forHTTPHeaderField: "x-herald-user-token"), "tok2")
+    }
+
+    func testIdentifiedSyncWithoutVerificationStillRunsWithoutToken() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.identify(userId: "u1", traits: [:])
+        await core.drain()
+        XCTAssertTrue(harness.transport.messageRequests.contains { $0.url?.query?.contains("userId=u1") == true })
+        let required = await core.state.userTokenRequired
+        XCTAssertFalse(required)
+    }
 }

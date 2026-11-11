@@ -772,6 +772,8 @@ actor HeraldCore {
                 if token(for: userId) != request.value(forHTTPHeaderField: "x-herald-user-token") { continue }
                 if usersAwaitingToken.isEmpty { Log.warning("Herald needs a user token: call setUserToken") }
                 usersAwaitingToken.insert(userId!)
+                state.userTokenRequired = true
+                persist()
                 failureCount = 0
                 nextAttemptAt = nil
             case .rejected(let status):
@@ -889,7 +891,13 @@ actor HeraldCore {
         }
     }
 
-    /// Fetches cards and in-app messages; a 304 keeps the cache.
+    /// Identified, without a token, on a server known to require one: the sync would only get a 401.
+    private var syncAwaitsToken: Bool {
+        state.userId != nil && state.userToken == nil && state.userTokenRequired
+    }
+
+    /// Fetches cards and in-app messages; a 304 keeps the cache. Waits for `setUserToken` (which syncs) while
+    /// `syncAwaitsToken`.
     func syncMessages() async {
         guard state.enabled else { return }
         guard !isSyncing else {
@@ -901,6 +909,10 @@ actor HeraldCore {
         defer { isSyncing = false }
         repeat {
             resyncRequested = false
+            if syncAwaitsToken {
+                Log.debug("Message sync waits for setUserToken")
+                return
+            }
             await performSync()
         } while resyncRequested && state.enabled
     }
@@ -912,6 +924,7 @@ actor HeraldCore {
         var request = makeRequest(path: "api/v1/sdk/messages", userId: userId, query: query)
         request.httpMethod = "GET"
         if let etag = state.messagesETag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+        let sentToken = request.value(forHTTPHeaderField: "x-herald-user-token") != nil
 
         do {
             let (data, response) = try await transport.send(request)
@@ -924,8 +937,19 @@ actor HeraldCore {
                 let payload = try MessagesPayload.decode(data)
                 storage.saveMessages(data)
                 state.messagesETag = response.value(forHTTPHeaderField: "ETag")
+                // Accepted without a token: verification is not required (any more).
+                if userId != nil, !sentToken { state.userTokenRequired = false }
                 persist()
                 apply(payload)
+            case 401 where userId != nil && !Backoff.isAppKeyRejection(data):
+                state.userTokenRequired = true
+                persist()
+                // Expected before the first setUserToken, which syncs again: not an error then.
+                if !sentToken {
+                    Log.debug("Message sync needs a user token; waiting for setUserToken")
+                } else {
+                    Log.warning("Message sync failed with HTTP 401: Herald refused the user token")
+                }
             default:
                 Log.warning("Message sync failed with HTTP \(response.statusCode)")
             }
