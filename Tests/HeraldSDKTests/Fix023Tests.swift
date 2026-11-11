@@ -59,4 +59,36 @@ final class Fix023Tests: XCTestCase {
         await relaunched.drain()
         XCTAssertEqual(registrar.count, 1, "a stored token needs no registration")
     }
+
+    private func impressions(_ harness: CoreHarness) throws -> [String] {
+        let events: [[String: HeraldValue]] = try harness.transport.batchBodies()
+            .flatMap { $0.objectValue?["events"]?.arrayValue ?? [] }.compactMap(\.objectValue)
+        let shown = events.filter { $0["type"] == .string("interaction") && $0["action"] == .string("impression") }
+        return shown.compactMap { $0["messageId"]?.stringValue }
+    }
+
+    private func coreWithCards(_ harness: CoreHarness) async throws -> HeraldCore {
+        let core = harness.makeCore()
+        await core.debugApply(try MessagesPayload.decode(fixtureData("messages")))
+        return core
+    }
+
+    // D3: one impression per card per session, across feed rebuilds and relaunches; a new session logs again.
+    func testCardImpressionLoggedOncePerSession() async throws {
+        let harness = CoreHarness()
+        let core = try await coreWithCards(harness)
+        let visible = await core.visibleCards()
+        let card = try XCTUnwrap(visible.first)
+        await core.logCardImpression(card)
+        await core.logCardImpression(card)  // a second feed, or a filter change
+        let relaunched = try await coreWithCards(harness)
+        await relaunched.logCardImpression(card)
+        await relaunched.flushNow()
+        XCTAssertEqual(try impressions(harness), [card.id])
+
+        harness.clock.advance(31 * 60)  // the session times out
+        await relaunched.logCardImpression(card)
+        await relaunched.flushNow()
+        XCTAssertEqual(try impressions(harness), [card.id, card.id])
+    }
 }

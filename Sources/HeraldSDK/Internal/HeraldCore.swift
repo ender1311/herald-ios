@@ -166,6 +166,7 @@ actor HeraldCore {
         }
         state.userToken = nil
         state.dismissedCardIds = []
+        state.impressedCardIds = []
         state.messagesETag = nil
         state.pendingMessageIds = []
         state.deferredPushSubscription = nil
@@ -295,9 +296,15 @@ actor HeraldCore {
 
     // MARK: - Content cards
 
+    /// Logged once per card per session, however many feeds show it (persisted with the session).
     func logCardImpression(_ card: ContentCard) {
-        guard logInteraction(messageId: card.id, kind: "content_card", action: "impression", decisionId: card.decisionId)
+        guard state.enabled else { return }
+        ensureSession()  // a timed-out session ends first, clearing the set
+        guard !state.impressedCardIds.contains(card.id),
+            logInteraction(messageId: card.id, kind: "content_card", action: "impression", decisionId: card.decisionId)
         else { return }
+        state.impressedCardIds.insert(card.id)
+        persist()
         updateCard(card.id) { $0.viewed = true }
     }
 
@@ -511,6 +518,7 @@ actor HeraldCore {
         }
         let session = SessionState(id: String(Int64(date.timeIntervalSince1970 * 1000)), startedAt: date, lastActivityAt: date)
         state.session = session
+        state.impressedCardIds = []
         activityPersistedAt = date
         persist()
         enqueue("session_start", [:])

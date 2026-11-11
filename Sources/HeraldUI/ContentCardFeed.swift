@@ -9,7 +9,8 @@ enum HeraldUILog {
 
 /// The current user's content cards from `Herald.shared.contentCards`, pinned first then newest.
 ///
-/// Impressions are logged once per card when at least half of it is visible. Clicks are logged, then
+/// Impressions are logged once per card per session (across feeds and relaunches) when at least half
+/// of it is visible. Clicks are logged, then
 /// passed to `onCardClick`, or by default the card's url opens through `Herald.shared.deepLinkHandler`
 /// and then the environment's `openURL`. Dismissible cards can be swiped away (VoiceOver: the Dismiss
 /// action), which logs the dismissal. Impressions are written to the unified log
