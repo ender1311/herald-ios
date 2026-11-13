@@ -1,6 +1,6 @@
 # Changelog
 
-Releases follow the policy on [Versioning and support](https://beaconfrontier.com/herald/docs/operations/versioning-and-support). iOS and Android share version numbers.
+Releases follow the policy on [Versioning and support](https://heraldsdk.com/docs/operations/versioning-and-support). iOS and Android share version numbers.
 
 ## 0.2.3
 

@@ -41,7 +41,7 @@ Herald.shared.track("workout_completed", properties: ["minutes": 32])
 // In a SwiftUI view: ContentCardFeed()
 ```
 
-The full guide, including push setup, is at https://beaconfrontier.com/herald/docs.
+The full guide, including push setup, is at https://heraldsdk.com/docs.
 
 ## License
 
