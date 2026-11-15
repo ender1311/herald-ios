@@ -2,7 +2,7 @@
 
 Releases follow the policy on [Versioning and support](https://heraldsdk.com/docs/operations/versioning-and-support). iOS and Android share version numbers.
 
-## Unreleased
+## 0.3.0
 
 ### Added
 
