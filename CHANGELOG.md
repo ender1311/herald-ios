@@ -2,6 +2,14 @@
 
 Releases follow the policy on [Versioning and support](https://heraldsdk.com/docs/operations/versioning-and-support). iOS and Android share version numbers.
 
+## 0.4.0
+
+### Added
+
+- Crash and hang reports on iPhone, off by default: set `crashReports = true` on `HeraldConfiguration`. The SDK then sends Apple MetricKit crash and hang diagnostics to Herald (`POST /api/v1/sdk/diagnostics`), with no user or device id.
+- Reports that fail to send wait in a small file (newest 50) and go out on the next launch. Nothing is sent while the SDK is disabled, and `wipeData()` deletes waiting reports.
+- The privacy manifest declares crash data: not linked to the user, not used for tracking, for app functionality.
+
 ## 0.3.0
 
 ### Added

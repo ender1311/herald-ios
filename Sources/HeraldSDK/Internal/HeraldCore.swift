@@ -29,6 +29,8 @@ actor HeraldCore {
     private let makeId: @Sendable () -> String
     /// Asks iOS for the APNs token again; it comes back through the app's `setPushToken` forwarding.
     private let registerForPush: @Sendable () async -> Void
+    /// Set when `configuration.crashReports` is on.
+    private let crashReports: CrashReports?
 
     private(set) var state: PersistedState
     private let queue: EventQueue
@@ -81,6 +83,8 @@ actor HeraldCore {
         self.now = now
         self.random = random
         self.makeId = makeId
+        crashReports = configuration.crashReports
+            ? CrashReports(configuration: configuration, fileURL: storage.diagnosticsURL, transport: transport) : nil
         state = storage.loadState() ?? PersistedState(deviceId: UUID().uuidString.lowercased())
         if storage.isDisabledMarked { state.enabled = false }
         queue = EventQueue(fileURL: storage.queueURL)
@@ -101,6 +105,18 @@ actor HeraldCore {
         await output.cardsChanged(visible)
         // A launch only asks for the token; it never changes the push subscription.
         if state.enabled, state.pushToken == nil { restorePushIfAuthorized(resubscribe: false) }
+        if state.enabled, let crashReports { spawn { _ in await crashReports.send() } }
+    }
+
+    /// MetricKit crash and hang reports: kept and sent only while enabled and `crashReports` is on.
+    func recordDiagnostics(_ reports: [DiagnosticReport]) {
+        guard state.enabled, let crashReports else { return }
+        spawn { core in
+            let device = await core.deviceInfo.current()
+            let binary = Bundle.main.executableURL?.lastPathComponent
+            await crashReports.add(reports.map { $0.item(device: device, appBinaryName: binary) })
+            await crashReports.send()
+        }
     }
 
     private var userKey: String { state.userId ?? Self.anonymousKey }

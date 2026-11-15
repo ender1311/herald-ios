@@ -100,6 +100,7 @@ struct Storage {
     var queueURL: URL { directory.appendingPathComponent("events.jsonl") }
     private var stateURL: URL { directory.appendingPathComponent("state.json") }
     private var messagesURL: URL { directory.appendingPathComponent("messages.json") }
+    var diagnosticsURL: URL { directory.appendingPathComponent("diagnostics.json") }
     /// The opt-out lives in its own marker file (as on Android), so an unreadable state.json can never
     /// re-enable a disabled SDK.
     private var disabledMarkerURL: URL { Self.disabledMarkerURL(in: directory) }
@@ -146,7 +147,7 @@ struct Storage {
 
     /// Keeps the opt-out marker: a wipe leaves the SDK disabled.
     func wipe() {
-        for url in [queueURL, stateURL, messagesURL] {
+        for url in [queueURL, stateURL, messagesURL, diagnosticsURL] {
             try? FileManager.default.removeItem(at: url)
         }
     }

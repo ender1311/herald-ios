@@ -15,7 +15,7 @@ import UserNotifications
 /// the host app: invalid input is logged and skipped.
 public final class Herald: Sendable {
     public static let shared = Herald()
-    public static let sdkVersion = "0.3.0"
+    public static let sdkVersion = "0.4.0"
     /// Calls kept before `configure` runs (and while the core is busy); newer calls are dropped beyond it.
     static let maxBufferedCalls = 1_000
 
@@ -59,7 +59,8 @@ public final class Herald: Sendable {
         _ configuration: HeraldConfiguration,
         storage: @escaping @Sendable () -> Storage = { Storage(directory: Storage.defaultDirectory()) },
         transport: HeraldTransport = URLSessionTransport(),
-        deviceInfo: DeviceInfoProvider = SystemDeviceInfoProvider()
+        deviceInfo: DeviceInfoProvider = SystemDeviceInfoProvider(),
+        subscribeToDiagnostics: @Sendable (Herald) -> Void = CrashReports.subscribeToMetricKit
     ) {
         let first = configured.withLock { done in
             defer { done = true }
@@ -84,6 +85,7 @@ public final class Herald: Sendable {
                 await command(core)
             }
         }
+        if configuration.crashReports { subscribeToDiagnostics(self) }
         LiveActivityTokens.observe { hex in self.send { core in core.setLiveActivityToken(hex: hex) } }
         #if canImport(UIKit) && !os(watchOS)
         Task { @MainActor in LifecycleObserver.install(self) }

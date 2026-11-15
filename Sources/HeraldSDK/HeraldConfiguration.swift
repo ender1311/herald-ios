@@ -40,6 +40,9 @@ public struct HeraldConfiguration: Sendable {
     /// Minimum seconds between two triggered in-app messages.
     public var inAppMinimumInterval: TimeInterval = 30
     public var logLevel: HeraldLogLevel = .warning
+    /// iOS only: sends MetricKit crash and hang diagnostics to Herald, with no user or device id.
+    /// Nothing is sent while the SDK is disabled.
+    public var crashReports: Bool = false
 
     public init(appKey: String, endpoint: URL) {
         self.appKey = appKey
