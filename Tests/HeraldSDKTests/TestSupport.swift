@@ -66,6 +66,7 @@ final class FakeTransport: HeraldTransport {
     func enqueueBatchError(_ error: URLError) { state.withLock { $0.batchResponses.append(.failure(error)) } }
     func enqueueMessages(_ response: FakeResponse) { state.withLock { $0.messageResponses.append(response) } }
     var diagnosticsRequests: [URLRequest] { requests.filter { $0.url?.path.hasSuffix("/sdk/diagnostics") == true } }
+    func enqueueDiagnostics(_ response: FakeResponse) { state.withLock { $0.diagnosticsResponses.append(.success(response)) } }
     func enqueueDiagnosticsError(_ error: URLError) { state.withLock { $0.diagnosticsResponses.append(.failure(error)) } }
 
     func batchBodies() throws -> [HeraldValue] {

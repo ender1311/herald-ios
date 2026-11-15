@@ -32,8 +32,9 @@ struct DiagnosticReport: Sendable, Equatable {
 }
 
 /// Keeps crash and hang reports in a small file and sends them in chunks; a failed send waits for the next
-/// report or launch.
-actor CrashReports {
+/// report or launch. File access is synchronous under one lock, so the core can check consent and write with no
+/// suspension in between, and `wipe()` can never be undone by a send that was in flight.
+final class CrashReports: Sendable {
     static let maxItems = 20
     static let maxBytes = 256 * 1024
     static let maxPending = 50
@@ -46,7 +47,8 @@ actor CrashReports {
     private let fileURL: URL
     private let transport: HeraldTransport
     private let request: URLRequest
-    private var isSending = false
+    /// Guards the file and whether a send loop is running.
+    private let lock = OSAllocatedUnfairLock(initialState: false)
 
     init(configuration: HeraldConfiguration, fileURL: URL, transport: HeraldTransport) {
         self.fileURL = fileURL
@@ -60,17 +62,29 @@ actor CrashReports {
 
     /// Keeps at most the newest 50.
     func add(_ items: [HeraldValue]) {
-        let pending = load() + items.map { Pending(id: UUID().uuidString, item: $0) }
-        save(Array(pending.suffix(Self.maxPending)))
+        lock.withLock { _ in
+            let pending = load() + items.map { Pending(id: UUID().uuidString, item: $0) }
+            save(Array(pending.suffix(Self.maxPending)))
+        }
     }
 
-    /// Sends pending items oldest first, up to 20 (and 256 KB) per request, until one fails.
-    func send() async {
-        guard !isSending else { return }  // the running loop re-reads the file, so it picks up new items
-        isSending = true
-        defer { isSending = false }
+    func wipe() {
+        lock.withLock { _ in try? FileManager.default.removeItem(at: fileURL) }
+    }
+
+    /// Sends pending items oldest first, up to 20 (and 256 KB) per request, until one fails or `isEnabled`
+    /// turns false (checked before every request; the items are kept).
+    func send(isEnabled: @Sendable () async -> Bool) async {
+        // The running loop re-reads the file, so it picks up new items.
+        let claimed = lock.withLock { sending -> Bool in
+            if sending { return false }
+            sending = true
+            return true
+        }
+        guard claimed else { return }
+        defer { lock.withLock { $0 = false } }
         while true {
-            var chunk = Array(load().prefix(Self.maxItems))
+            var chunk = Array(lock.withLock { _ in load() }.prefix(Self.maxItems))
             guard !chunk.isEmpty else { return }
             var body = encode(chunk)
             while body.count > Self.maxBytes, chunk.count > 1 {
@@ -83,6 +97,7 @@ actor CrashReports {
                 remove(ids)
                 continue
             }
+            guard await isEnabled() else { return }
             var request = request
             request.httpBody = body
             guard let (_, response) = try? await transport.send(request) else { return }
@@ -117,7 +132,7 @@ actor CrashReports {
     }
 
     private func remove(_ ids: Set<String>) {
-        save(load().filter { !ids.contains($0.id) })
+        lock.withLock { _ in save(load().filter { !ids.contains($0.id) }) }
     }
 
     /// Subscribes to MetricKit diagnostics (iOS only; a no-op elsewhere).

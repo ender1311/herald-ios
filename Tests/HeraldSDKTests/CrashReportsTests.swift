@@ -148,3 +148,107 @@ final class CrashReportsTests: XCTestCase {
         }
     }
 }
+
+/// Answers like `FixtureDeviceInfo` once `release()` is called; `entered` tells when a caller is waiting.
+final class GatedDeviceInfo: DeviceInfoProvider {
+    private let state = OSAllocatedUnfairLock(initialState: (entered: false, released: false))
+    var entered: Bool { state.withLock { $0.entered } }
+    func release() { state.withLock { $0.released = true } }
+
+    func current() async -> DeviceInfo {
+        state.withLock { $0.entered = true }
+        while !state.withLock({ $0.released }) { try? await Task.sleep(nanoseconds: 1_000_000) }
+        return await FixtureDeviceInfo().current()
+    }
+}
+
+final class CrashReportsConsentAndStatusTests: XCTestCase {
+    private let report = DiagnosticReport(kind: "crash", payload: ["n": 1], build: nil, osVersion: nil, deviceModel: nil)
+    private let config: (inout HeraldConfiguration) -> Void = { $0.crashReports = true }
+
+    private func relaunchRequests(_ harness: CoreHarness) async -> Int {
+        let core = harness.makeCore(config)
+        await core.start()
+        await core.drain()
+        return harness.transport.diagnosticsRequests.count
+    }
+
+    func testKeptReportsAreNotSentAfterSetEnabledFalse() async {
+        let harness = CoreHarness()
+        harness.transport.enqueueDiagnosticsError(URLError(.timedOut))
+        let core = harness.makeCore(config)
+        await core.recordDiagnostics([report])
+        await core.drain()
+        await core.setEnabled(false)
+        let relaunched = await relaunchRequests(harness)
+        XCTAssertEqual(relaunched, 1, "no request while disabled")
+    }
+
+    func testWipeDuringTheDeviceInfoAwaitStoresNothing() async throws {
+        let harness = CoreHarness()
+        let gate = GatedDeviceInfo()
+        let core = harness.makeCore(deviceInfo: gate, config)
+        await core.recordDiagnostics([report])
+        for _ in 0..<1_000 where !gate.entered { try await Task.sleep(nanoseconds: 1_000_000) }
+        XCTAssertTrue(gate.entered)
+        await core.wipeData()
+        gate.release()
+        await core.drain()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: Storage(directory: harness.directory).diagnosticsURL.path))
+        await core.setEnabled(true)
+        let relaunched = await relaunchRequests(harness)
+        XCTAssertEqual(relaunched, 0)
+    }
+
+    func testSendStopsAndKeepsItemsWhenConsentTurnsOffMidLoop() async throws {
+        let directory = tempDirectory()
+        let transport = FakeTransport()
+        let configuration = HeraldConfiguration(appKey: "pk_test", endpoint: URL(string: "https://h.example.com")!)
+        let reports = CrashReports(configuration: configuration, fileURL: directory.appendingPathComponent("d.json"), transport: transport)
+        reports.add((1...25).map { HeraldValue.object(["n": .number(Double($0))]) })
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        await reports.send { calls.withLock { $0 += 1; return $0 == 1 } }
+        XCTAssertEqual(transport.diagnosticsRequests.count, 1, "the second chunk waits")
+        await reports.send { true }
+        XCTAssertEqual(transport.diagnosticsRequests.count, 2)
+        let last = try JSONDecoder().decode(HeraldValue.self, from: XCTUnwrap(transport.diagnosticsRequests[1].httpBody))
+        XCTAssertEqual(last.objectValue?["items"]?.arrayValue?.count, 5)
+    }
+
+    private func statusKeeps(_ status: Int) async -> Bool {
+        let harness = CoreHarness()
+        harness.transport.enqueueDiagnostics(FakeResponse(status: status))
+        let core = harness.makeCore(config)
+        await core.recordDiagnostics([report])
+        await core.drain()
+        return await relaunchRequests(harness) == 2
+    }
+
+    func testStatusHandling() async {
+        for status in [400, 413] {
+            let kept = await statusKeeps(status)
+            XCTAssertFalse(kept, "\(status) drops the chunk")
+        }
+        for status in [500, 401] {
+            let kept = await statusKeeps(status)
+            XCTAssertTrue(kept, "\(status) keeps the chunk")
+        }
+    }
+
+    func testAnItemOver256KBIsDroppedWhileTheOthersSend() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore(config)
+        let huge = DiagnosticReport(
+            kind: "crash", payload: ["blob": .string(String(repeating: "x", count: 300 * 1024))], build: nil, osVersion: nil,
+            deviceModel: nil
+        )
+        await core.recordDiagnostics([huge, report, report])
+        await core.drain()
+        let requests = harness.transport.diagnosticsRequests
+        XCTAssertEqual(requests.count, 1)
+        let body = try JSONDecoder().decode(HeraldValue.self, from: XCTUnwrap(requests.first?.httpBody))
+        XCTAssertEqual(body.objectValue?["items"]?.arrayValue?.count, 2)
+        let relaunched = await relaunchRequests(harness)
+        XCTAssertEqual(relaunched, 1, "nothing left behind")
+    }
+}

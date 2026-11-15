@@ -105,7 +105,7 @@ actor HeraldCore {
         await output.cardsChanged(visible)
         // A launch only asks for the token; it never changes the push subscription.
         if state.enabled, state.pushToken == nil { restorePushIfAuthorized(resubscribe: false) }
-        if state.enabled, let crashReports { spawn { _ in await crashReports.send() } }
+        if state.enabled, let crashReports { spawn { core in await crashReports.send { await core.state.enabled } } }
     }
 
     /// MetricKit crash and hang reports: kept and sent only while enabled and `crashReports` is on.
@@ -113,9 +113,11 @@ actor HeraldCore {
         guard state.enabled, let crashReports else { return }
         spawn { core in
             let device = await core.deviceInfo.current()
+            // Consent may have changed during the await; add() is synchronous, so nothing can slip in after this.
+            guard core.state.enabled else { return }
             let binary = Bundle.main.executableURL?.lastPathComponent
-            await crashReports.add(reports.map { $0.item(device: device, appBinaryName: binary) })
-            await crashReports.send()
+            crashReports.add(reports.map { $0.item(device: device, appBinaryName: binary) })
+            await crashReports.send { await core.state.enabled }
         }
     }
 
@@ -694,6 +696,7 @@ actor HeraldCore {
         flushTimer?.cancel()
         flushTimer = nil
         queue.removeAll()
+        crashReports?.wipe()
         storage.wipe()
         intervalRetry?.cancel()
         state = PersistedState(deviceId: UUID().uuidString.lowercased())
