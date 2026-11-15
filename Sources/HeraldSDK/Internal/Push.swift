@@ -2,11 +2,30 @@ import Foundation
 #if os(iOS)
 import UIKit
 #endif
+#if os(iOS) && canImport(ActivityKit)
+import ActivityKit
+import HeraldLiveActivity
+#endif
 
 enum PushToken {
     /// APNs device token as lowercase hex, the form APNs and Herald expect.
     static func hex(_ token: Data) -> String {
         token.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+enum LiveActivityTokens {
+    /// Forwards each Live Activity push-to-start token as hex. iOS 18+ only: Herald updates and ends
+    /// activities over broadcast channels, which need iOS 18.
+    static func observe(_ forward: @escaping @Sendable (String) -> Void) {
+        #if os(iOS) && canImport(ActivityKit)
+        guard #available(iOS 18.0, *) else { return }
+        Task {
+            for await token in Activity<HeraldActivityAttributes>.pushToStartTokenUpdates {
+                forward(PushToken.hex(token))
+            }
+        }
+        #endif
     }
 }
 

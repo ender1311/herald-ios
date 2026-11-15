@@ -28,6 +28,8 @@ struct PersistedState: Codable, Equatable {
     var dismissedCardIds: Set<String> = []
     var messagesETag: String?
     var pushToken: String?
+    /// The Live Activity push-to-start token (iOS 18+), re-sent on the same occasions as `pushToken`.
+    var liveActivityToken: String?
     /// A push subscription change recorded before any APNs token existed; sent right after the token.
     var deferredPushSubscription: SubscriptionState?
     /// Decision ids of recently opened pushes (newest last, capped), so a redelivered open counts once.
@@ -45,7 +47,7 @@ struct PersistedState: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case deviceId, userId, userToken, pendingTokens, dropped, enabled, session, lastShown, lastDisplayAt
         case pendingMessageIds, dismissedCardIds, messagesETag, pushToken, deferredPushSubscription, recentPushOpens
-        case impressedCardIds, userTokenRequired
+        case impressedCardIds, userTokenRequired, liveActivityToken
     }
 
     /// Every field but the device id is optional, so state written by an older SDK version still loads.
@@ -64,6 +66,7 @@ struct PersistedState: Codable, Equatable {
         dismissedCardIds = c.lenient(Set<String>.self, .dismissedCardIds) ?? []
         messagesETag = c.lenient(String.self, .messagesETag)
         pushToken = c.lenient(String.self, .pushToken)
+        liveActivityToken = c.lenient(String.self, .liveActivityToken)
         deferredPushSubscription = c.lenient(SubscriptionState.self, .deferredPushSubscription)
         recentPushOpens = c.lenient([String].self, .recentPushOpens) ?? []
         impressedCardIds = c.lenient(Set<String>.self, .impressedCardIds) ?? []

@@ -250,14 +250,28 @@ actor HeraldCore {
         }
     }
 
-    private func resendPushToken() {
-        guard let token = state.pushToken else { return }
-        enqueuePushToken(token)
+    /// A Live Activity push-to-start token (iOS 18+), sent as `push_token` platform `apns_live_activity`.
+    func setLiveActivityToken(hex: String) {
+        guard !rejected("setLiveActivityToken", Validation.length("token", hex, max: Validation.maxPushToken)) else { return }
+        state.liveActivityToken = hex
+        persist()
+        guard state.enabled else { return }
+        enqueuePushToken(hex, platform: "apns_live_activity")
     }
 
-    private func enqueuePushToken(_ token: String) {
+    private func resendPushToken() {
+        if let token = state.pushToken { enqueuePushToken(token) }
+        resendLiveActivityToken()
+    }
+
+    private func resendLiveActivityToken() {
+        guard let token = state.liveActivityToken else { return }
+        enqueuePushToken(token, platform: "apns_live_activity")
+    }
+
+    private func enqueuePushToken(_ token: String, platform: String = "apns") {
         var fields: [String: HeraldValue] = [
-            "platform": "apns", "token": .string(token), "environment": .string(PushEnvironment.current),
+            "platform": .string(platform), "token": .string(token), "environment": .string(PushEnvironment.current),
         ]
         if !bundleId.isEmpty { fields["bundleId"] = .string(Validation.truncated(bundleId, Validation.maxName)) }
         record("push_token", fields)
@@ -621,6 +635,7 @@ actor HeraldCore {
         spawn { core in
             let authorization = await core.deviceInfo.current().pushAuthorization ?? ""
             guard ["authorized", "provisional", "ephemeral"].contains(authorization), core.state.enabled else { return }
+            if resubscribe { core.resendLiveActivityToken() }
             if let token = core.state.pushToken {
                 core.enqueuePushToken(token)
                 core.setSubscription(.push, .subscribed)

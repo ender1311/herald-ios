@@ -84,6 +84,7 @@ public final class Herald: Sendable {
                 await command(core)
             }
         }
+        LiveActivityTokens.observe { hex in self.send { core in core.setLiveActivityToken(hex: hex) } }
         #if canImport(UIKit) && !os(watchOS)
         Task { @MainActor in LifecycleObserver.install(self) }
         #else

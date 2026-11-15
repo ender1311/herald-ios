@@ -2,6 +2,13 @@
 
 Releases follow the policy on [Versioning and support](https://heraldsdk.com/docs/operations/versioning-and-support). iOS and Android share version numbers.
 
+## Unreleased
+
+### Added
+
+- Live Activities (iPhone, iOS 18+). New library product `HeraldLiveActivity`, with no dependency on HeraldSDK so a widget extension can link it. It holds `HeraldActivityAttributes` and `HeraldLiveActivityWidget`, a lock screen and Dynamic Island view that shows a title, body and either a progress bar or a countdown, and opens the campaign's deep link on tap. Add `HeraldLiveActivityWidget()` to your `WidgetBundle` and set `NSSupportsLiveActivities` to YES.
+- On iOS 18+, HeraldSDK sends the Live Activity push-to-start token to Herald (`push_token` with platform `apns_live_activity`), so campaigns can start a Live Activity. Like the APNs token, it is not sent while the SDK is disabled, and is sent again on `setEnabled(true)` and when the user changes.
+
 ## 0.2.3
 
 ### Fixed
