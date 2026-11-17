@@ -899,6 +899,9 @@ actor HeraldCore {
     private func makeRequest(path: String, userId: String?, query: [URLQueryItem] = []) -> URLRequest {
         var components = URLComponents(url: configuration.endpoint.appendingPathComponent(path), resolvingAgainstBaseURL: false)
         if !query.isEmpty { components?.queryItems = query }
+        // URLComponents leaves "+" as is, and the server's URLSearchParams reads it as a space.
+        let encodedQuery = components?.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        components?.percentEncodedQuery = encodedQuery
         var request = URLRequest(url: components?.url ?? configuration.endpoint.appendingPathComponent(path))
         request.setValue(configuration.appKey, forHTTPHeaderField: "x-herald-app-key")
         if let token = token(for: userId) {
