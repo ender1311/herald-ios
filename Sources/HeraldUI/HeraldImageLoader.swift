@@ -2,7 +2,7 @@
 import os
 import UIKit
 
-/// Downloads to a file, downsamples to the drawn size and caches by cost (decoded bytes). Work is
+/// Downloads (at most `ImageDownsampler.maxBytes`) to a file, downsamples to the drawn size and caches by cost (decoded bytes). Work is
 /// cancelled with the view's task.
 @MainActor
 final class HeraldImageLoader {
@@ -29,17 +29,15 @@ final class HeraldImageLoader {
         if url.isFileURL {
             file = url
         } else {
+            guard let data = await ImageDownsampler.download(url) else { return nil }
+            let downloaded = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            temporary = downloaded
             do {
-                let (downloaded, response) = try await URLSession.shared.download(from: url)
-                temporary = downloaded
-                let size = try downloaded.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                    size > 0, size <= ImageDownsampler.maxBytes
-                else { return nil }
-                file = downloaded
+                try data.write(to: downloaded)
             } catch {
                 return nil
             }
+            file = downloaded
         }
         guard !Task.isCancelled else { return nil }
         let cgImage = await Task.detached(priority: .utility) {
