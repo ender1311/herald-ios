@@ -175,7 +175,8 @@ struct CoreHarness {
     }
 
     func makeCore(
-        deviceInfo: DeviceInfoProvider = FixtureDeviceInfo(), _ configure: (inout HeraldConfiguration) -> Void = { _ in }
+        deviceInfo: DeviceInfoProvider = FixtureDeviceInfo(), queueCap: Int = EventQueue.defaultCap,
+        _ configure: (inout HeraldConfiguration) -> Void = { _ in }
     ) -> HeraldCore {
         var configuration = HeraldConfiguration(appKey: "pk_test", endpoint: URL(string: "https://herald.example.com")!)
         configuration.flushAt = 100_000  // tests flush explicitly
@@ -186,7 +187,7 @@ struct CoreHarness {
             configuration: configuration, storage: Storage(directory: directory), transport: transport,
             deviceInfo: deviceInfo, output: output,
             now: { clock.now }, random: { 1 }, makeId: { ids.next() }, bundleId: "com.lumen.app",
-            registerForPush: registerForPush
+            registerForPush: registerForPush, queueCap: queueCap
         )
     }
 }

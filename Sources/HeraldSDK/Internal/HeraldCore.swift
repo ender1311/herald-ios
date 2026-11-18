@@ -41,9 +41,10 @@ actor HeraldCore {
     private(set) var showingId: String?
 
     private var currentFlush: Task<Void, Never>?
-    /// While any `confirmFlush` waits: ids of events dropped without being accepted (rejected or too large).
+    /// While any `confirmFlush` waits: ids of events the server accepted. Success is tracked, not failure, so
+    /// any other way an event leaves the queue (eviction, wipe, rejection) counts as not delivered.
     private var confirmations = 0
-    private var droppedIds: Set<String> = []
+    private var acceptedIds: Set<String> = []
     private var isSyncing = false
     private var resyncRequested = false
     private(set) var failureCount = 0
@@ -74,7 +75,8 @@ actor HeraldCore {
         random: @escaping @Sendable () -> Double = { Double.random(in: 0...1) },
         makeId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
         bundleId: String = Bundle.main.bundleIdentifier ?? "",
-        registerForPush: @escaping @Sendable () async -> Void = PushRegistrar.register
+        registerForPush: @escaping @Sendable () async -> Void = PushRegistrar.register,
+        queueCap: Int = EventQueue.defaultCap
     ) {
         self.bundleId = bundleId
         self.registerForPush = registerForPush
@@ -90,7 +92,7 @@ actor HeraldCore {
             ? CrashReports(configuration: configuration, fileURL: storage.diagnosticsURL, transport: transport) : nil
         state = storage.loadState() ?? PersistedState(deviceId: UUID().uuidString.lowercased())
         if storage.isDisabledMarked { state.enabled = false }
-        queue = EventQueue(fileURL: storage.queueURL)
+        queue = EventQueue(fileURL: storage.queueURL, cap: queueCap)
         engine = InAppEngine(minimumInterval: configuration.inAppMinimumInterval)
         engine.lastShown = state.lastShown[state.userId ?? Self.anonymousKey] ?? [:]
         engine.lastDisplayAt = state.lastDisplayAt
@@ -762,20 +764,18 @@ actor HeraldCore {
     /// server: false when one is still queued (offline, backoff, disabled, waiting for a user token) or was
     /// dropped. Events queued later don't count. Waits in a child task, so the actor keeps taking calls.
     func confirmFlush(_ done: @escaping @Sendable (Bool) -> Void) {
+        // Disabled, calls aren't recorded, so an empty queue proves nothing.
+        guard state.enabled, !appKeyRejected else { return done(false) }
         let ids = Set(queue.entries.map(\.id))
         guard !ids.isEmpty else { return done(true) }
         confirmations += 1
         spawn { core in
             await core.flushNow()
-            let delivered = !core.queue.entries.contains { ids.contains($0.id) } && core.droppedIds.isDisjoint(with: ids)
+            let delivered = ids.isSubset(of: core.acceptedIds)
             core.confirmations -= 1
-            if core.confirmations == 0 { core.droppedIds = [] }
+            if core.confirmations == 0 { core.acceptedIds = [] }
             done(delivered)
         }
-    }
-
-    private func noteDropped(_ ids: Set<String>) {
-        if confirmations > 0 { droppedIds.formUnion(ids) }
     }
 
     /// Sends queued events in batches until the queue is empty, a batch must be retried, or the SDK is disabled.
@@ -790,7 +790,6 @@ actor HeraldCore {
             guard let (body, sent) = await batchBody(batch, userId: userId, dropped: droppedReported) else {
                 // A single event too large to send: drop it rather than block the queue forever.
                 Log.error("Dropping an event larger than \(Self.maxBatchBytes / 1024) KB")
-                noteDropped([batch[0].id])
                 queue.remove(ids: [batch[0].id])
                 continue
             }
@@ -816,6 +815,7 @@ actor HeraldCore {
 
             switch outcome {
             case .accepted:
+                if confirmations > 0 { acceptedIds.formUnion(ids) }
                 queue.remove(ids: ids)
                 // A signed-in batch accepted without a token: verification is off, so identified syncs resume.
                 if userId != nil, request.value(forHTTPHeaderField: "x-herald-user-token") == nil, state.userTokenRequired {
@@ -843,7 +843,6 @@ actor HeraldCore {
                 nextAttemptAt = nil
             case .rejected(let status):
                 Log.error("Herald rejected a batch of \(sent.count) event(s) with HTTP \(status); dropping it")
-                noteDropped(ids)
                 queue.remove(ids: ids)
                 failureCount = 0
                 nextAttemptAt = nil

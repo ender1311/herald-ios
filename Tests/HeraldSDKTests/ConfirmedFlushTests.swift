@@ -54,6 +54,41 @@ final class ConfirmedFlushTests: XCTestCase {
         XCTAssertGreaterThan(left, 0, "the later event is still queued")
     }
 
+    func testFalseWhenUnsentEventsAreEvictedDuringTheWait() async {
+        let harness = CoreHarness()
+        let core = harness.makeCore(queueCap: 3)
+        await core.track("a", properties: [:])  // anonymous: its own batch
+        await core.identify(userId: "u_1", traits: [:])  // u_1's batch, waits behind the first
+        harness.transport.setBatchDelay(milliseconds: 100)
+        let result = Task { await confirm(core) }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        for i in 0..<5 { await core.track("later_\(i)", properties: [:]) }  // evicts u_1's unsent identify
+        let delivered = await result.value
+        XCTAssertFalse(delivered)
+    }
+
+    func testFalseWhenWipedDuringTheWait() async {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.track("a", properties: [:])
+        await core.identify(userId: "u_1", traits: [:])
+        harness.transport.setBatchDelay(milliseconds: 100)
+        let result = Task { await confirm(core) }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        await core.wipeData()
+        let delivered = await result.value
+        XCTAssertFalse(delivered)
+    }
+
+    func testFalseWhileDisabledEvenWithNothingQueued() async {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.setEnabled(false)
+        await core.setAttributes(["email": .null])  // not recorded while disabled
+        let delivered = await confirm(core)
+        XCTAssertFalse(delivered)
+    }
+
     @MainActor
     func testFacadeTimesOutWithoutBlockingOtherCalls() async throws {
         let transport = FakeTransport()

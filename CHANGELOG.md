@@ -9,6 +9,10 @@ Releases follow the policy on [Versioning and support](https://heraldsdk.com/doc
 - Build kind in device context: `context.app.distribution` is `development` (simulator, Xcode or development-signed), `testflight` or `appstore`. It is detected once in the background (StoreKit `AppTransaction`), left out of batches until known, and sent in minimal mode too because it doesn't identify anyone. The Herald console shows it next to each test phone.
 - `flush(timeout:) async -> Bool`: sends queued events and waits, returning `true` once every event recorded before the call was accepted by Herald, `false` on timeout, offline, a server retry delay, while disabled, or when Herald refused an event. Events recorded after the call don't hold it up, and other SDK calls keep running while it waits. Use it before `setEnabled(false)` to make sure a last change (such as `setAttributes(["email": .null])` at sign-out) was delivered; events still queued when the SDK is disabled stay on the device and go out after `setEnabled(true)`. The existing `flush()` is unchanged. `timeout` has no default, so a plain `flush()` in async code still calls the non-waiting one.
 
+### Changed in Herald (server, every SDK version)
+
+- Attributes set to `null` (from the SDK or `POST /api/v1/users`) now remove the key from the user's profile instead of storing a null. A segment condition that checks an attribute exists no longer matches a user who sent `null` for it (it used to). Apps can clear `email` at sign-out this way. The stored event log no longer keeps `email` or `$email` values from identify traits or attribute events; the profile and contacts still get them.
+
 ## 0.4.0
 
 ### Added

@@ -201,14 +201,17 @@ public final class Herald: Sendable {
                 continuation = nil
             }
         }
+        let timer = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+        defer { timer.withLock { $0?.cancel() } }
         return await withCheckedContinuation { continuation in
             pending.withLock { $0 = continuation }
             guard send({ core in core.confirmFlush(finish) }) else { return finish(false) }
-            // Started after the continuation is stored, so a timeout can't fire into nothing; a no-op once finished.
-            Task {
+            // Started after the continuation is stored, so a timeout can't fire into nothing; cancelled on return.
+            let task = Task {
                 try? await Task.sleep(for: timeout)
-                finish(false)
+                if !Task.isCancelled { finish(false) }
             }
+            timer.withLock { $0 = task }
         }
     }
 
