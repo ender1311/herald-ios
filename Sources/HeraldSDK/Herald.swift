@@ -183,6 +183,35 @@ public final class Herald: Sendable {
         send { core in core.scheduleFlush() }
     }
 
+    /// Sends queued events now and waits: true once every event recorded before this call has been accepted
+    /// by Herald; false on timeout, when offline, inside a server-requested retry delay, while the SDK is
+    /// disabled, or when the server refused an event. Events recorded after the call don't hold it up.
+    ///
+    /// Use it to make sure a last change (for example `setAttributes(["email": .null])` at sign-out) is
+    /// delivered before `setEnabled(false)`: what this call confirmed is already on the server. Events still
+    /// queued when the SDK is disabled stay on the device unsent, and go out after `setEnabled(true)`
+    /// (`wipeData()` deletes them).
+    ///
+    /// `timeout` has no default on purpose: with one, a plain `flush()` inside async code would pick this overload.
+    public func flush(timeout: Duration) async -> Bool {
+        let pending = OSAllocatedUnfairLock<CheckedContinuation<Bool, Never>?>(initialState: nil)
+        let finish: @Sendable (Bool) -> Void = { delivered in
+            pending.withLock { continuation in
+                continuation?.resume(returning: delivered)
+                continuation = nil
+            }
+        }
+        return await withCheckedContinuation { continuation in
+            pending.withLock { $0 = continuation }
+            guard send({ core in core.confirmFlush(finish) }) else { return finish(false) }
+            // Started after the continuation is stored, so a timeout can't fire into nothing; a no-op once finished.
+            Task {
+                try? await Task.sleep(for: timeout)
+                finish(false)
+            }
+        }
+    }
+
     /// Turns all collection, sending and message display on or off. Persisted across launches. Turning it
     /// off first sends one best-effort push unsubscribe for this device (so Herald stops sending it pushes)
     /// and hides cached content cards until it is turned back on. Turning it back on re-sends the stored

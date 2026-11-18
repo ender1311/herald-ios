@@ -7,6 +7,7 @@ Releases follow the policy on [Versioning and support](https://heraldsdk.com/doc
 ### Added
 
 - Build kind in device context: `context.app.distribution` is `development` (simulator, Xcode or development-signed), `testflight` or `appstore`. It is detected once in the background (StoreKit `AppTransaction`), left out of batches until known, and sent in minimal mode too because it doesn't identify anyone. The Herald console shows it next to each test phone.
+- `flush(timeout:) async -> Bool`: sends queued events and waits, returning `true` once every event recorded before the call was accepted by Herald, `false` on timeout, offline, a server retry delay, while disabled, or when Herald refused an event. Events recorded after the call don't hold it up, and other SDK calls keep running while it waits. Use it before `setEnabled(false)` to make sure a last change (such as `setAttributes(["email": .null])` at sign-out) was delivered; events still queued when the SDK is disabled stay on the device and go out after `setEnabled(true)`. The existing `flush()` is unchanged. `timeout` has no default, so a plain `flush()` in async code still calls the non-waiting one.
 
 ## 0.4.0
 

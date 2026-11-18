@@ -41,6 +41,9 @@ actor HeraldCore {
     private(set) var showingId: String?
 
     private var currentFlush: Task<Void, Never>?
+    /// While any `confirmFlush` waits: ids of events dropped without being accepted (rejected or too large).
+    private var confirmations = 0
+    private var droppedIds: Set<String> = []
     private var isSyncing = false
     private var resyncRequested = false
     private(set) var failureCount = 0
@@ -755,6 +758,26 @@ actor HeraldCore {
         await startFlush().value
     }
 
+    /// Flushes and reports, through `done`, whether every event queued before this call was accepted by the
+    /// server: false when one is still queued (offline, backoff, disabled, waiting for a user token) or was
+    /// dropped. Events queued later don't count. Waits in a child task, so the actor keeps taking calls.
+    func confirmFlush(_ done: @escaping @Sendable (Bool) -> Void) {
+        let ids = Set(queue.entries.map(\.id))
+        guard !ids.isEmpty else { return done(true) }
+        confirmations += 1
+        spawn { core in
+            await core.flushNow()
+            let delivered = !core.queue.entries.contains { ids.contains($0.id) } && core.droppedIds.isDisjoint(with: ids)
+            core.confirmations -= 1
+            if core.confirmations == 0 { core.droppedIds = [] }
+            done(delivered)
+        }
+    }
+
+    private func noteDropped(_ ids: Set<String>) {
+        if confirmations > 0 { droppedIds.formUnion(ids) }
+    }
+
     /// Sends queued events in batches until the queue is empty, a batch must be retried, or the SDK is disabled.
     private func runFlush() async {
         guard state.enabled, !appKeyRejected else { return }
@@ -767,6 +790,7 @@ actor HeraldCore {
             guard let (body, sent) = await batchBody(batch, userId: userId, dropped: droppedReported) else {
                 // A single event too large to send: drop it rather than block the queue forever.
                 Log.error("Dropping an event larger than \(Self.maxBatchBytes / 1024) KB")
+                noteDropped([batch[0].id])
                 queue.remove(ids: [batch[0].id])
                 continue
             }
@@ -819,6 +843,7 @@ actor HeraldCore {
                 nextAttemptAt = nil
             case .rejected(let status):
                 Log.error("Herald rejected a batch of \(sent.count) event(s) with HTTP \(status); dropping it")
+                noteDropped(ids)
                 queue.remove(ids: ids)
                 failureCount = 0
                 nextAttemptAt = nil
