@@ -2,6 +2,12 @@
 
 Releases follow the policy on [Versioning and support](https://heraldsdk.com/docs/operations/versioning-and-support). iOS and Android share version numbers.
 
+## 0.5.0
+
+### Added
+
+- Build kind in device context: `context.app.distribution` is `development` (simulator, Xcode or development-signed), `testflight` or `appstore`. It is detected once in the background (StoreKit `AppTransaction`), left out of batches until known, and sent in minimal mode too because it doesn't identify anyone. The Herald console shows it next to each test phone.
+
 ## 0.4.0
 
 ### Added

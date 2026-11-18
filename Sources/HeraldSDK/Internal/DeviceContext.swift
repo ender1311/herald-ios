@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import os
+import StoreKit
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -29,6 +30,8 @@ struct DeviceInfo: Sendable, Equatable {
     var timezone: String?
     var networkType: String?
     var pushAuthorization: String?
+    /// "development", "testflight" or "appstore"; nil until known. Not identifying, so sent in every mode.
+    var distribution: String? = nil
 }
 
 extension DeviceInfo {
@@ -70,6 +73,10 @@ enum DeviceContext {
             ],
             "os": ["name": .string(info.osName), "version": .string(info.osVersion)],
         ]
+        if let distribution = info.distribution, case .object(var app) = context["app"] {
+            app["distribution"] = .string(distribution)
+            context["app"] = .object(app)
+        }
         if let region = info.region { context["region"] = .string(region) }
         guard collection == .standard else { return .object(context) }
 
@@ -88,12 +95,43 @@ enum DeviceContext {
     }
 }
 
+/// What kind of build the app is: Xcode/development-signed, TestFlight or App Store.
+enum AppDistribution {
+    /// `pushEnvironment`: `PushEnvironment.current`. `storeEnvironment`: the app transaction's environment
+    /// ("xcode", "sandbox" or "production"), nil when unknown. Nil when the build kind can't be told.
+    static func map(pushEnvironment: String, storeEnvironment: String?) -> String? {
+        if pushEnvironment == "sandbox" { return "development" }
+        switch storeEnvironment {
+        case "xcode": return "development"
+        case "sandbox": return "testflight"
+        case "production": return "appstore"
+        default: return nil
+        }
+    }
+
+    static func detect() async -> String? {
+        let push = PushEnvironment.current
+        if let known = map(pushEnvironment: push, storeEnvironment: nil) { return known }
+        guard let transaction = try? await AppTransaction.shared else { return nil }
+        let env = transaction.unsafePayloadValue.environment
+        let store: String? = env == .xcode ? "xcode" : env == .sandbox ? "sandbox" : env == .production ? "production" : nil
+        return map(pushEnvironment: push, storeEnvironment: store)
+    }
+}
+
 /// Reads device facts from the system. Never reads IDFA, IDFV, carrier or location.
 final class SystemDeviceInfoProvider: DeviceInfoProvider {
     private let monitor = NWPathMonitor()
     private let networkType = OSAllocatedUnfairLock<String?>(initialState: nil)
+    private let distribution = OSAllocatedUnfairLock<String?>(initialState: nil)
 
     init() {
+        // Detected once in the background; batches go out without the key until it is known.
+        let distribution = self.distribution
+        Task.detached(priority: .utility) {
+            let value = await AppDistribution.detect()
+            distribution.withLock { $0 = value }
+        }
         let networkType = self.networkType
         monitor.pathUpdateHandler = { path in
             let type: String
@@ -133,7 +171,8 @@ final class SystemDeviceInfoProvider: DeviceInfoProvider {
             locale: locale.identifier(.bcp47),
             language: locale.language.languageCode?.identifier,
             timezone: TimeZone.current.identifier,
-            networkType: networkType.withLock { $0 }
+            networkType: networkType.withLock { $0 },
+            distribution: distribution.withLock { $0 }
         )
         #if canImport(UIKit) && !os(watchOS)
         let ui = await Self.mainActorFacts()

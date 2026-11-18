@@ -214,6 +214,29 @@ final class WireFormatTests: XCTestCase {
         XCTAssertEqual(context["timezone"]?.stringValue?.count, 64)
     }
 
+    func testDistributionMapping() {
+        XCTAssertEqual(AppDistribution.map(pushEnvironment: "sandbox", storeEnvironment: nil), "development")
+        XCTAssertEqual(AppDistribution.map(pushEnvironment: "sandbox", storeEnvironment: "production"), "development")
+        XCTAssertEqual(AppDistribution.map(pushEnvironment: "production", storeEnvironment: "xcode"), "development")
+        XCTAssertEqual(AppDistribution.map(pushEnvironment: "production", storeEnvironment: "sandbox"), "testflight")
+        XCTAssertEqual(AppDistribution.map(pushEnvironment: "production", storeEnvironment: "production"), "appstore")
+        XCTAssertNil(AppDistribution.map(pushEnvironment: "production", storeEnvironment: nil))
+    }
+
+    func testDistributionIsSentInEveryModeOnlyWhenKnown() {
+        var info = DeviceInfo(
+            appName: "A", appVersion: "1", appBuild: "1", appNamespace: "a", osName: "iOS", osVersion: "18",
+            manufacturer: "Apple", model: "iPhone15,2", deviceType: "phone"
+        )
+        XCTAssertNil(DeviceContext.build(info, collection: .minimal).objectValue?["app"]?.objectValue?["distribution"])
+        info.distribution = "testflight"
+        for mode in [DeviceDataCollection.minimal, .standard] {
+            let app = DeviceContext.build(info, collection: mode).objectValue?["app"]?.objectValue
+            XCTAssertEqual(app?["distribution"]?.stringValue, "testflight")
+            XCTAssertEqual(app?["name"]?.stringValue, "A")
+        }
+    }
+
     func testPushTokensMoveAheadOfPushSubscriptions() {
         func e(_ id: String, _ fields: [String: HeraldValue]) -> QueuedEvent {
             var event = fields
