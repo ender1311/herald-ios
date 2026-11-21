@@ -17,8 +17,14 @@ Releases follow the policy on [Versioning and support](https://heraldsdk.com/doc
 - Build kind in device context: `context.app.distribution` is `development` (simulator, Xcode or development-signed), `testflight` or `appstore`. It is detected once in the background (StoreKit `AppTransaction`), left out of batches until known, and sent in minimal mode too because it doesn't identify anyone. The Herald console shows it next to each test phone.
 - `flush(timeout:) async -> Bool`: sends queued events and waits, returning `true` once every event recorded before the call was accepted by Herald, `false` on timeout, offline, a server retry delay, while disabled, or when Herald refused an event. Events recorded after the call don't hold it up, and other SDK calls keep running while it waits. Use it before `setEnabled(false)` to make sure a last change (such as `setAttributes(["email": .null])` at sign-out) was delivered; events still queued when the SDK is disabled stay on the device and go out after `setEnabled(true)`. The existing `flush()` is unchanged. `timeout` has no default, so a plain `flush()` in async code still calls the non-waiting one.
 
+### Changed
+
+- Partial rejects: when Herald accepts a batch but lists events it couldn't accept in `rejected`, the batch leaves the queue as before, each rejected event is logged at debug level with its reason, and none is retried. `flush(timeout:)` returns `false` when an event it waited for was rejected. A 400 from an older server still drops the batch.
+
 ### Changed in Herald (server, every SDK version)
 
+- Per-event validation: each event in a batch is checked on its own. An invalid event (unknown type, missing or invalid field, over 32 KB, or more than 30 days old) is rejected and listed in the response's `rejected`; the rest of the batch is kept. Before, one bad event failed the whole batch with a 400 and the SDK dropped all of it. The console lists rejected events on the SDK connection's page for 30 days.
+- Clock correction: event times are corrected for the device's clock using the batch's `sentAt` and the time it arrived, so a phone with a wrong clock no longer puts activity, send times or goal credit in the wrong window. The device's own timestamp is kept.
 - Attributes set to `null` (from the SDK or `POST /api/v1/users`) now remove the key from the user's profile instead of storing a null. A segment condition that checks an attribute exists no longer matches a user who sent `null` for it (it used to). Apps can clear `email` at sign-out this way. The stored event log no longer keeps `email` or `$email` values from identify traits or attribute events; the profile and contacts still get them.
 
 ## 0.4.0

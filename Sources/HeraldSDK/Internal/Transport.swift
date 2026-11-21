@@ -67,6 +67,17 @@ enum Backoff {
         (try? JSONDecoder().decode(HeraldValue.self, from: body))?.objectValue?["error"]?.stringValue == "Invalid app key"
     }
 
+    /// The `rejected` entries of an accepted batch's response: each event's position in the batch and a log line.
+    /// The server kept the rest of the batch, and a rejected event is never retried.
+    static func rejectedEvents(_ body: Data) -> [(index: Int, line: String)] {
+        let data = (try? JSONDecoder().decode(HeraldValue.self, from: body))?.objectValue?["data"]?.objectValue
+        return (data?["rejected"]?.arrayValue ?? []).compactMap(\.objectValue).map { r in
+            let index = Int(r["index"]?.numberValue ?? -1)
+            let id = r["id"]?.stringValue ?? "#\(index)"
+            return (index, "\(id): \(r["reason"]?.stringValue ?? "?") (\(r["detail"]?.stringValue ?? ""))")
+        }
+    }
+
     static func outcome(status: Int, response: HTTPURLResponse, body: Data, attempt: Int, random: Double, now: Date)
         -> BatchOutcome
     {

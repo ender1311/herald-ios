@@ -848,8 +848,12 @@ actor HeraldCore {
 
             switch outcome {
             case .accepted:
-                if confirmations > 0 { acceptedIds.formUnion(ids) }
+                let rejected = Backoff.rejectedEvents(responseBody)
+                // A rejected event was not accepted, so a confirmed flush waiting on it reports false.
+                let rejectedIds = Set(rejected.compactMap { sent.indices.contains($0.index) ? sent[$0.index].id : nil })
+                if confirmations > 0 { acceptedIds.formUnion(ids.subtracting(rejectedIds)) }
                 queue.remove(ids: ids)
+                for r in rejected { Log.debug("Herald rejected event \(r.line)") }
                 // A signed-in batch accepted without a token: verification is off, so identified syncs resume.
                 if userId != nil, request.value(forHTTPHeaderField: "x-herald-user-token") == nil, state.userTokenRequired {
                     state.userTokenRequired = false

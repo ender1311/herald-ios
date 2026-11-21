@@ -150,6 +150,25 @@ final class QueueAndFlushTests: XCTestCase {
         }
     }
 
+    func testAcceptedBatchWithRejectedEventsIsClearedAndNotRetried() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.track("a", properties: [:])
+        await core.track("b", properties: [:])
+        await core.drain()
+        let body = try fixtureData("batch-rejected")
+        harness.transport.enqueueBatch(FakeResponse(status: 200, body: body))
+        await core.flushNow()
+        let queued = await core.queuedCount
+        XCTAssertEqual(queued, 0, "the whole batch leaves the queue")
+        let next = await core.nextAttemptAt
+        XCTAssertNil(next)
+        await core.flushNow()
+        XCTAssertEqual(harness.transport.batchRequests.count, 1, "nothing is resent")
+        XCTAssertEqual(Backoff.rejectedEvents(body).map(\.line), ["e2: too_old (timestamp is more than 30 days old)"])
+        XCTAssertTrue(Backoff.rejectedEvents(Data(#"{"data":{"accepted":2,"duplicates":0}}"#.utf8)).isEmpty)
+    }
+
     /// I1: a 401 on an identified batch keeps it until setUserToken, which sends it with the token.
     func testUnauthorizedIdentifiedBatchWaitsForToken() async throws {
         let harness = CoreHarness()

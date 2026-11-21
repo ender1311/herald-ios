@@ -37,6 +37,18 @@ final class ConfirmedFlushTests: XCTestCase {
         XCTAssertFalse(rejected, "a dropped batch was never accepted")
     }
 
+    func testFalseWhenTheServerRejectsAnEventOfAnAcceptedBatch() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.track("a", properties: [:])
+        await core.track("b", properties: [:])
+        harness.transport.enqueueBatch(FakeResponse(status: 200, body: try fixtureData("batch-rejected")))
+        let delivered = await confirm(core)
+        XCTAssertFalse(delivered, "the event at index 1 was rejected")
+        let left = await core.queuedCount
+        XCTAssertEqual(left, 0, "and is not retried")
+    }
+
     func testEventsRecordedAfterTheCallDontCount() async {
         let harness = CoreHarness()
         let core = harness.makeCore()
