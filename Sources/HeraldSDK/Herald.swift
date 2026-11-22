@@ -33,6 +33,7 @@ public final class Herald: Sendable {
     /// The SDK's on/off state as of the latest accepted `setEnabled` / `wipeData` call (commands apply in
     /// order, so that is where the SDK ends up), else as loaded by the core; nil until either happens.
     private let enabledState = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+    private let heraldIdState = OSAllocatedUnfairLock<String?>(initialState: nil)
 
     init() {
         contentCards = ContentCardStore()
@@ -76,7 +77,7 @@ public final class Herald: Sendable {
         Task.detached(priority: .utility) {
             let core = HeraldCore(
                 configuration: configuration, storage: storage(), transport: transport, deviceInfo: deviceInfo,
-                output: bridge
+                output: bridge, heraldIdMirror: self.heraldIdState
             )
             let loaded = await core.state.enabled
             self.enabledState.withLock { if $0 == nil { $0 = loaded } }
@@ -122,6 +123,13 @@ public final class Herald: Sendable {
     /// token, cards, in-app messages and that user's in-app history.
     public func reset() {
         send { core in core.reset() }
+    }
+
+    /// The identified person's User ID (`XXXX-XXXX`), which support can search on People. Show it on a settings or
+    /// help screen labeled "Support ID". Nil until the first batch after `identify` is accepted, and again after
+    /// `reset()` or identifying another user. Cached across launches once `configure` has loaded it.
+    public var heraldId: String? {
+        heraldIdState.withLock { $0 }
     }
 
     // MARK: - Events and attributes

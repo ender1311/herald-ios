@@ -43,6 +43,12 @@ Herald.shared.track("workout_completed", properties: ["minutes": 32])
 
 The full guide, including push setup, is at https://heraldsdk.com/docs.
 
+## Support ID
+
+`Herald.shared.heraldId` is the identified person's User ID (`XXXX-XXXX`), which support can search on People in
+Herald. Show it on a settings or help screen labeled "Support ID". It is nil until the first batch after `identify` is
+accepted, and again after `reset()`.
+
 ## Pushes your app sends
 
 Herald limits how many pushes a person gets in 24 hours, counting pushes your app sends itself. Report each one from

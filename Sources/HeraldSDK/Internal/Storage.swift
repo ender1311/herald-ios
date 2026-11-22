@@ -39,6 +39,8 @@ struct PersistedState: Codable, Equatable {
     /// The server refused an identified request without a user token (identity verification is required):
     /// identified syncs wait for `setUserToken` instead of collecting a 401.
     var userTokenRequired = false
+    /// The current user's User ID (XXXX-XXXX) from the last accepted batch; nil while anonymous.
+    var heraldId: String?
 
     init(deviceId: String) {
         self.deviceId = deviceId
@@ -47,7 +49,7 @@ struct PersistedState: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case deviceId, userId, userToken, pendingTokens, dropped, enabled, session, lastShown, lastDisplayAt
         case pendingMessageIds, dismissedCardIds, messagesETag, pushToken, deferredPushSubscription, recentPushOpens
-        case impressedCardIds, userTokenRequired, liveActivityToken
+        case impressedCardIds, userTokenRequired, liveActivityToken, heraldId
     }
 
     /// Every field but the device id is optional, so state written by an older SDK version still loads.
@@ -71,6 +73,7 @@ struct PersistedState: Codable, Equatable {
         recentPushOpens = c.lenient([String].self, .recentPushOpens) ?? []
         impressedCardIds = c.lenient(Set<String>.self, .impressedCardIds) ?? []
         userTokenRequired = c.lenient(Bool.self, .userTokenRequired) ?? false
+        heraldId = c.lenient(String.self, .heraldId)
     }
 }
 

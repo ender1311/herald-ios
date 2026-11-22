@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Hooks from the core to the main-actor world (card store, in-app delegate and presenter).
 protocol CoreOutput: Sendable {
@@ -31,6 +32,8 @@ actor HeraldCore {
     private let registerForPush: @Sendable () async -> Void
     /// Set when `configuration.crashReports` is on.
     private let crashReports: CrashReports?
+    /// `state.heraldId`, readable from any thread for `Herald.heraldId`.
+    nonisolated let heraldIdMirror: OSAllocatedUnfairLock<String?>
 
     private(set) var state: PersistedState
     private let queue: EventQueue
@@ -76,8 +79,10 @@ actor HeraldCore {
         makeId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() },
         bundleId: String = Bundle.main.bundleIdentifier ?? "",
         registerForPush: @escaping @Sendable () async -> Void = PushRegistrar.register,
-        queueCap: Int = EventQueue.defaultCap
+        queueCap: Int = EventQueue.defaultCap,
+        heraldIdMirror: OSAllocatedUnfairLock<String?> = OSAllocatedUnfairLock(initialState: nil)
     ) {
+        self.heraldIdMirror = heraldIdMirror
         self.bundleId = bundleId
         self.registerForPush = registerForPush
         self.configuration = configuration
@@ -101,6 +106,7 @@ actor HeraldCore {
             engine.messages = payload.inAppMessages
         }
         storage.saveState(state)
+        heraldIdMirror.withLock { [id = state.heraldId] in $0 = id }
     }
 
     /// Publishes the cached cards once the store is listening.
@@ -191,6 +197,7 @@ actor HeraldCore {
             state.pendingTokens[userId] = token
         }
         state.userToken = nil
+        setHeraldId(nil)
         state.dismissedCardIds = []
         state.impressedCardIds = []
         state.messagesETag = nil
@@ -715,6 +722,7 @@ actor HeraldCore {
         storage.wipe()
         intervalRetry?.cancel()
         state = PersistedState(deviceId: UUID().uuidString.lowercased())
+        heraldIdMirror.withLock { $0 = nil }
         state.enabled = false
         cards = []
         engine = InAppEngine(minimumInterval: configuration.inAppMinimumInterval)
@@ -727,6 +735,21 @@ actor HeraldCore {
     }
 
     private func persist() { storage.saveState(state) }
+
+    /// A new person (sign-out, another user) has no User ID until their first accepted batch.
+    private func setHeraldId(_ id: String?) {
+        state.heraldId = id
+        heraldIdMirror.withLock { $0 = id }
+    }
+
+    /// `data.heraldId` of an accepted batch response, when the server sent one.
+    static func heraldId(in body: Data) -> String? {
+        struct Response: Decodable {
+            struct Payload: Decodable { let heraldId: String? }
+            let data: Payload
+        }
+        return (try? JSONDecoder().decode(Response.self, from: body))?.data.heraldId
+    }
 
     @discardableResult
     private func spawn(_ work: @escaping @Sendable (isolated HeraldCore) async -> Void) -> Task<Void, Never> {
@@ -833,6 +856,11 @@ actor HeraldCore {
                     persist()
                 }
                 state.dropped = max(0, state.dropped - droppedReported)
+                // Only the current user's: a batch from before a sign-out or switch names the previous person.
+                if let userId, userId == state.userId, let id = Self.heraldId(in: responseBody), id != state.heraldId {
+                    setHeraldId(id)
+                    persist()
+                }
                 failureCount = 0
                 nextAttemptAt = nil
                 pruneTokens()

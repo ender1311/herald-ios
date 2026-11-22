@@ -8,6 +8,7 @@ Releases follow the policy on [Versioning and support](https://heraldsdk.com/doc
 
 - `trackExternalPush(messageId:category:source:)` reports a push your app sent itself (`$external_push`), so Herald's push limit across all sources counts it. `ExternalPushCategory` is `.transactional`, `.marketing` or `.other` (the default). Never include the push's title or body.
 - `HeraldConfiguration.trackExternalPushes` (default `true`): a tapped push that isn't from Herald, forwarded to `handleNotificationResponse`, is recorded as `$external_push`. Silent pushes and local notifications never are. The id is the payload key `herald_external_id` when present, else the notification's request id; the category is `herald_category` (`transactional`, `marketing` or `other`), else `other`. Pushes shown in the foreground without a tap, and the Notification Service Extension, record nothing.
+- `Herald.shared.heraldId: String?`: the identified person's User ID (`XXXX-XXXX`), which support can search on People. Read from the batch response (`data.heraldId`) and cached; nil until the first accepted batch after `identify`, and cleared by `reset()` or identifying another user. Show it as a "Support ID".
 
 ## 0.5.0
 
