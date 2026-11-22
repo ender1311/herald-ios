@@ -25,7 +25,11 @@
       "id": "0b8f3c2e-0000-4000-8000-000000000001",
       "type": "session_start",
       "timestamp": "2026-11-09T14:00:00.000Z",
-      "sessionId": "1762696800000"
+      "sessionId": "1762696800000",
+      "properties": {
+        "session_index": 1,
+        "previous_session_id": null
+      }
     },
     {
       "id": "0b8f3c2e-0000-4000-8000-000000000002",

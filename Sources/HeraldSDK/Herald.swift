@@ -331,7 +331,7 @@ public final class Herald: Sendable {
         let messageId = payload.interactionId
         send { core in core.pushResponse(messageId: messageId, decisionId: decisionId, action: action, buttonId: buttonId) }
         if action != "dismiss", let url = payload.deeplink(forAction: buttonId) {
-            Task { @MainActor in self.openDeepLink(url) }
+            Task { @MainActor in self.openDeepLink(url, source: "push") }
         }
         return true
     }
@@ -478,8 +478,14 @@ public final class Herald: Sendable {
         send { core in core.debugShowInAppMessage(messageId) }
     }
 
-    /// Routes a URL through `deepLinkHandler`, falling back to the system.
+    /// Routes a URL through `deepLinkHandler`, falling back to the system. Sends `$deep_link_opened` (source `link`)
+    /// unless `trackDeepLinks` is off.
     @MainActor public func openDeepLink(_ url: URL) {
+        openDeepLink(url, source: "link")
+    }
+
+    @MainActor func openDeepLink(_ url: URL, source: String) {
+        send { core in core.deepLinkOpened(url, source: source) }
         if bridge.deepLinkHandler?(url) == true { return }
         #if canImport(UIKit) && !os(watchOS)
         UIApplication.shared.open(url)

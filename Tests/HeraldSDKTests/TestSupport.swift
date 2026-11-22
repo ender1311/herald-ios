@@ -180,6 +180,7 @@ struct CoreHarness {
     ) -> HeraldCore {
         var configuration = HeraldConfiguration(appKey: "pk_test", endpoint: URL(string: "https://herald.example.com")!)
         configuration.flushAt = 100_000  // tests flush explicitly
+        configuration.trackLifecycleEvents = false  // LifecycleTests turn it on
         configure(&configuration)
         let clock = clock
         let ids = ids

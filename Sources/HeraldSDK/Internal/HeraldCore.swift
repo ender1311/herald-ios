@@ -59,6 +59,13 @@ actor HeraldCore {
     /// The server refused the app key: nothing is sent (and nothing dropped) until the next launch.
     private(set) var appKeyRejected = false
     private(set) var isForeground = false
+    /// Backgrounded since the last foreground: sessions then time out after `backgroundSessionTimeout`.
+    private var inBackground = false
+    /// No state on disk at launch: the first launch of this install.
+    private let isFreshInstall: Bool
+    /// `$app_opened` waits for this launch's first foreground; a push tap seen before it sets `from_push`.
+    private var appOpenPending = true
+    private var openedFromPush = false
     private var flushTimer: Task<Void, Never>?
     private var intervalRetry: Task<Void, Never>?
     private var expiryRefresh: Task<Void, Never>?
@@ -97,7 +104,9 @@ actor HeraldCore {
         self.makeId = makeId
         crashReports = configuration.crashReports
             ? CrashReports(configuration: configuration, fileURL: storage.diagnosticsURL, transport: transport) : nil
-        state = storage.loadState() ?? PersistedState(deviceId: UUID().uuidString.lowercased())
+        let loaded = storage.loadState()
+        isFreshInstall = loaded == nil
+        state = loaded ?? PersistedState(deviceId: UUID().uuidString.lowercased())
         if storage.isDisabledMarked { state.enabled = false }
         queue = EventQueue(fileURL: storage.queueURL, cap: queueCap)
         engine = InAppEngine(minimumInterval: configuration.inAppMinimumInterval)
@@ -119,6 +128,48 @@ actor HeraldCore {
         // A launch only asks for the token; it never changes the push subscription.
         if state.enabled, state.pushToken == nil { restorePushIfAuthorized(resubscribe: false) }
         if state.enabled, let crashReports { spawn { core in await crashReports.send { await core.state.enabled } } }
+        if state.enabled, configuration.trackLifecycleEvents { await recordAppVersion() }
+    }
+
+    /// `$app_installed` on this install's first launch, `$app_updated` when the version or build changed. State
+    /// from an SDK before 0.6.0 has no stored version: that launch only stores it.
+    private func recordAppVersion() async {
+        let info = await deviceInfo.current()
+        guard state.enabled else { return }
+        let version = Validation.truncated(info.appVersion, 64)
+        let build = Validation.truncated(info.appBuild, 64)
+        if isFreshInstall {
+            recordLifecycle("$app_installed", ["version": .string(version), "build": .string(build)])
+        } else if let previous = state.appVersion, previous != version || state.appBuild != build {
+            recordLifecycle("$app_updated", [
+                "version": .string(version), "build": .string(build),
+                "previous_version": .string(previous), "previous_build": .string(state.appBuild ?? ""),
+            ])
+        }
+        guard state.appVersion != version || state.appBuild != build else { return }
+        state.appVersion = version
+        state.appBuild = build
+        persist()
+    }
+
+    private func recordLifecycle(_ name: String, _ properties: [String: HeraldValue] = [:]) {
+        guard state.enabled, configuration.trackLifecycleEvents else { return }
+        record("track", ["name": .string(name), "properties": .object(properties)])
+    }
+
+    /// `$deep_link_opened` for a deep link the SDK routes. No query or fragment unless `trackDeepLinkQuery`; scheme
+    /// and host only in minimal data collection.
+    func deepLinkOpened(_ url: URL, source: String) {
+        guard state.enabled, configuration.trackDeepLinks else { return }
+        let t = { (s: String) in HeraldValue.string(Validation.truncated(s, Validation.maxName)) }
+        var properties: [String: HeraldValue] = [
+            "scheme": t(url.scheme ?? ""), "host": t(url.host ?? ""), "source": .string(source),
+        ]
+        if configuration.deviceDataCollection == .standard {
+            properties["path"] = t(url.path)
+            if configuration.trackDeepLinkQuery, let query = url.query { properties["query"] = t(query) }
+        }
+        record("track", ["name": "$deep_link_opened", "properties": .object(properties)])
     }
 
     /// MetricKit crash and hang reports: kept and sent only while enabled and `crashReports` is on.
@@ -325,6 +376,7 @@ actor HeraldCore {
     /// no per-send key, so nothing is deduplicated.
     func pushResponse(messageId: String, decisionId: String?, action: String, buttonId: String?) {
         guard state.enabled else { return }
+        if action != "dismiss" { openedFromPush = true }
         switch action {
         case "button":
             let opened = recordPush(messageId: messageId, decisionId: decisionId, action: "open", buttonId: nil)
@@ -578,11 +630,13 @@ actor HeraldCore {
 
     // MARK: - Sessions
 
-    /// Continues the current session or, after `sessionTimeout` of inactivity, ends it and starts a new one.
+    /// Continues the current session or, after the foreground (or, once backgrounded, the background) timeout of
+    /// inactivity, ends it and starts a new one. A session persisted by an earlier launch continues the same way.
     func ensureSession() {
         let date = now()
+        let timeout = inBackground ? configuration.backgroundSessionTimeout : configuration.foregroundSessionTimeout
         if var session = state.session {
-            if date.timeIntervalSince(session.lastActivityAt) < configuration.sessionTimeout {
+            if date.timeIntervalSince(session.lastActivityAt) < timeout {
                 session.lastActivityAt = date
                 state.session = session
                 // Activity is persisted at most once a minute (and on background); a crash costs at most
@@ -596,11 +650,17 @@ actor HeraldCore {
             enqueueSessionEnd(session)
         }
         let session = SessionState(id: String(Int64(date.timeIntervalSince1970 * 1000)), startedAt: date, lastActivityAt: date)
+        let previousId = state.session?.id ?? state.lastSessionId
         state.session = session
+        state.sessionIndex += 1
+        state.lastSessionId = session.id
         state.impressedCardIds = []
         activityPersistedAt = date
         persist()
-        enqueue("session_start", [:])
+        enqueue("session_start", ["properties": [
+            "session_index": .number(Double(state.sessionIndex)),
+            "previous_session_id": previousId.map(HeraldValue.string) ?? .null,
+        ]])
         scheduleSync(thenFire: .sessionStart)
     }
 
@@ -619,10 +679,18 @@ actor HeraldCore {
 
     // MARK: - Lifecycle
 
-    func appDidBecomeActive() {
+    /// `lifecycle` false (re-enabled while in the foreground) sends no lifecycle events.
+    func appDidBecomeActive(lifecycle: Bool = true) {
         isForeground = true
+        let opened = appOpenPending
+        appOpenPending = false
         guard state.enabled else { return }
         ensureSession()
+        inBackground = false
+        if lifecycle {
+            if opened { recordLifecycle("$app_opened", ["from_push": .bool(openedFromPush)]) }
+            recordLifecycle("$app_foreground")
+        }
         startFlushTimer()
         // Timers do not run while the app is suspended: drop cards that expired meanwhile and reschedule.
         publishCards()
@@ -632,7 +700,9 @@ actor HeraldCore {
     /// Persists session activity and starts (or joins) a flush. Returns the flush task so the caller can
     /// hold its background-task assertion until the upload really finishes, without blocking recording.
     func appDidEnterBackground() -> Task<Void, Never> {
+        recordLifecycle("$app_background")
         isForeground = false
+        inBackground = true
         flushTimer?.cancel()
         flushTimer = nil
         intervalRetry?.cancel()
@@ -667,7 +737,7 @@ actor HeraldCore {
         publishCards()
         if enabled {
             if !wasEnabled { restorePushIfAuthorized() }
-            if isForeground { appDidBecomeActive() }
+            if isForeground { appDidBecomeActive(lifecycle: false) }
         } else {
             flushTimer?.cancel()
             flushTimer = nil
@@ -823,6 +893,7 @@ actor HeraldCore {
     private func runFlush() async {
         guard state.enabled, !appKeyRejected else { return }
         if let nextAttemptAt, now() < nextAttemptAt { return }
+        dropExpiredEvents()
 
         while state.enabled, !queue.entries.isEmpty {
             let (batch, userId) = nextBatch()
@@ -904,6 +975,19 @@ actor HeraldCore {
                 return
             }
         }
+    }
+
+    /// Drops queued events older than `maxQueuedEventAge` (Herald would reject them) and counts them in `dropped`.
+    private func dropExpiredEvents() {
+        let cutoff = now().addingTimeInterval(-configuration.maxQueuedEventAge)
+        let expired = queue.entries.filter { entry in
+            entry.event["timestamp"]?.stringValue.flatMap(WireDate.parse).map { $0 < cutoff } ?? false
+        }
+        guard !expired.isEmpty else { return }
+        queue.remove(ids: Set(expired.map(\.id)))
+        state.dropped += expired.count
+        persist()
+        Log.debug("Dropped \(expired.count) queued event(s) older than \(Int(configuration.maxQueuedEventAge / 86_400)) days")
     }
 
     /// The oldest run of events for one user, up to 100, skipping users waiting for a token. Events

@@ -41,6 +41,12 @@ struct PersistedState: Codable, Equatable {
     var userTokenRequired = false
     /// The current user's User ID (XXXX-XXXX) from the last accepted batch; nil while anonymous.
     var heraldId: String?
+    /// The app version and build last launched, for `$app_installed` / `$app_updated`.
+    var appVersion: String?
+    var appBuild: String?
+    /// Sessions started on this install (`session_index` of the latest) and the latest session's id.
+    var sessionIndex = 0
+    var lastSessionId: String?
 
     init(deviceId: String) {
         self.deviceId = deviceId
@@ -49,7 +55,7 @@ struct PersistedState: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case deviceId, userId, userToken, pendingTokens, dropped, enabled, session, lastShown, lastDisplayAt
         case pendingMessageIds, dismissedCardIds, messagesETag, pushToken, deferredPushSubscription, recentPushOpens
-        case impressedCardIds, userTokenRequired, liveActivityToken, heraldId
+        case impressedCardIds, userTokenRequired, liveActivityToken, heraldId, appVersion, appBuild, sessionIndex, lastSessionId
     }
 
     /// Every field but the device id is optional, so state written by an older SDK version still loads.
@@ -74,6 +80,10 @@ struct PersistedState: Codable, Equatable {
         impressedCardIds = c.lenient(Set<String>.self, .impressedCardIds) ?? []
         userTokenRequired = c.lenient(Bool.self, .userTokenRequired) ?? false
         heraldId = c.lenient(String.self, .heraldId)
+        appVersion = c.lenient(String.self, .appVersion)
+        appBuild = c.lenient(String.self, .appBuild)
+        sessionIndex = c.lenient(Int.self, .sessionIndex) ?? 0
+        lastSessionId = c.lenient(String.self, .lastSessionId)
     }
 }
 

@@ -9,13 +9,15 @@ Releases follow the policy on [Versioning and support](https://heraldsdk.com/doc
 - `trackExternalPush(messageId:category:source:)` reports a push your app sent itself (`$external_push`), so Herald's push limit across all sources counts it. `ExternalPushCategory` is `.transactional`, `.marketing` or `.other` (the default). Never include the push's title or body.
 - `HeraldConfiguration.trackExternalPushes` (default `true`): a tapped push that isn't from Herald, forwarded to `handleNotificationResponse`, is recorded as `$external_push`. Silent pushes and local notifications never are. The id is the payload key `herald_external_id` when present, else the notification's request id; the category is `herald_category` (`transactional`, `marketing` or `other`), else `other`. Pushes shown in the foreground without a tap, and the Notification Service Extension, record nothing.
 - `Herald.shared.heraldId: String?`: the identified person's User ID (`XXXX-XXXX`), which support can search on People. Read from the batch response (`data.heraldId`) and cached; nil until the first accepted batch after `identify`, and cleared by `reset()` or identifying another user. Show it as a "Support ID".
+- Lifecycle events, on by default (`trackLifecycleEvents`): `$app_installed` (first launch of the install), `$app_updated` (a new version or build, with `previous_version` and `previous_build`), `$app_opened` (cold start, at its first foreground, with `from_push`), `$app_foreground` and `$app_background`. They are `track` events with reserved names, sent in minimal data collection too. State from an earlier SDK only stores the version on its first 0.6.0 launch.
+- `$deep_link_opened` (`trackDeepLinks`, on by default) when a URL goes through `openDeepLink` or a push tap: `scheme`, `host`, `path` and `source` (`push` or `link`). No fragment, and no query unless `trackDeepLinkQuery` is on. Minimal data collection sends scheme and host only.
+- `foregroundSessionTimeout` and `backgroundSessionTimeout` (both 30 minutes): a session ends after the foreground timeout of inactivity, or after the background timeout once the app is in the background. A cold start within the foreground timeout of the last activity continues the session.
+- `session_start` carries `properties.session_index` (sessions on this install, from 1) and `properties.previous_session_id` (null for the first).
+- `maxQueuedEventAge` (30 days): older queued events are dropped before a batch is built, logged at debug level and counted in `dropped` (Herald would reject them as `too_old`).
 
-## 0.5.0
+### Deprecated
 
-### Added
-
-- Build kind in device context: `context.app.distribution` is `development` (simulator, Xcode or development-signed), `testflight` or `appstore`. It is detected once in the background (StoreKit `AppTransaction`), left out of batches until known, and sent in minimal mode too because it doesn't identify anyone. The Herald console shows it next to each test phone.
-- `flush(timeout:) async -> Bool`: sends queued events and waits, returning `true` once every event recorded before the call was accepted by Herald, `false` on timeout, offline, a server retry delay, while disabled, or when Herald refused an event. Events recorded after the call don't hold it up, and other SDK calls keep running while it waits. Use it before `setEnabled(false)` to make sure a last change (such as `setAttributes(["email": .null])` at sign-out) was delivered; events still queued when the SDK is disabled stay on the device and go out after `setEnabled(true)`. The existing `flush()` is unchanged. `timeout` has no default, so a plain `flush()` in async code still calls the non-waiting one.
+- `sessionTimeout`: setting it sets both new timeouts.
 
 ### Changed
 
@@ -26,6 +28,17 @@ Releases follow the policy on [Versioning and support](https://heraldsdk.com/doc
 
 - Per-event validation: each event in a batch is checked on its own. An invalid event (unknown type, missing or invalid field, over 32 KB, or more than 30 days old) is rejected and listed in the response's `rejected`; the rest of the batch is kept. Before, one bad event failed the whole batch with a 400 and the SDK dropped all of it. The console lists rejected events on the connection's page for 30 days.
 - Clock correction: event times are corrected for the device's clock using the batch's `sentAt` and the time it arrived, so a phone with a wrong clock no longer puts activity, send times or goal credit in the wrong window. The device's own timestamp is kept.
+- Lifecycle event and `session_start` properties are checked for their types (`invalid_field`). `$app_opened` and `$app_foreground` count as app activity; `$app_installed`, `$app_updated` and `$app_background` don't.
+
+## 0.5.0
+
+### Added
+
+- Build kind in device context: `context.app.distribution` is `development` (simulator, Xcode or development-signed), `testflight` or `appstore`. It is detected once in the background (StoreKit `AppTransaction`), left out of batches until known, and sent in minimal mode too because it doesn't identify anyone. The Herald console shows it next to each test phone.
+- `flush(timeout:) async -> Bool`: sends queued events and waits, returning `true` once every event recorded before the call was accepted by Herald, `false` on timeout, offline, a server retry delay, while disabled, or when Herald refused an event. Events recorded after the call don't hold it up, and other SDK calls keep running while it waits. Use it before `setEnabled(false)` to make sure a last change (such as `setAttributes(["email": .null])` at sign-out) was delivered; events still queued when the SDK is disabled stay on the device and go out after `setEnabled(true)`. The existing `flush()` is unchanged. `timeout` has no default, so a plain `flush()` in async code still calls the non-waiting one.
+
+### Changed in Herald (server, every SDK version)
+
 - Attributes set to `null` (from the SDK or `POST /api/v1/users`) now remove the key from the user's profile instead of storing a null. A segment condition that checks an attribute exists no longer matches a user who sent `null` for it (it used to). Apps can clear `email` at sign-out this way. The stored event log no longer keeps `email` or `$email` values from identify traits or attribute events; the profile and contacts still get them.
 
 ## 0.4.0
