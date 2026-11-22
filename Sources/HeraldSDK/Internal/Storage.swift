@@ -160,13 +160,20 @@ struct Storage {
         }
     }
 
-    func loadRemoteConfig() -> RemoteConfig? {
-        (try? Data(contentsOf: remoteConfigURL)).flatMap(RemoteConfig.decode)
+    /// The cached config, only when it was fetched with this app key: a key change never applies another app's config.
+    func loadRemoteConfig(appKey: String) -> RemoteConfig? {
+        guard let data = try? Data(contentsOf: remoteConfigURL),
+            (try? JSONDecoder().decode(HeraldValue.self, from: data))?.objectValue?["appKey"]?.stringValue == appKey
+        else { return nil }
+        return RemoteConfig.decode(data)
     }
 
-    func saveRemoteConfig(_ data: Data) {
+    /// Saves a 200 body with the app key it was fetched with.
+    func saveRemoteConfig(_ data: Data, appKey: String) {
+        guard var body = (try? JSONDecoder().decode(HeraldValue.self, from: data))?.objectValue else { return }
+        body["appKey"] = .string(appKey)
         do {
-            try data.write(to: remoteConfigURL, options: .atomic)
+            try JSONEncoder().encode(HeraldValue.object(body)).write(to: remoteConfigURL, options: .atomic)
         } catch {
             Log.error("Could not cache the remote config: \(error.localizedDescription)")
         }

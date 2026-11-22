@@ -8,7 +8,7 @@ private func configBody(_ version: String, _ settings: String) -> Data {
 final class RemoteConfigTests: XCTestCase {
     func testTheCachedConfigAppliesAtLaunchBeforeTheFetch() async throws {
         let harness = CoreHarness()
-        Storage(directory: harness.directory).saveRemoteConfig(configBody("v1", #"{"flushIntervalSeconds":60,"dataCollection":"minimal"}"#))
+        Storage(directory: harness.directory).saveRemoteConfig(configBody("v1", #"{"flushIntervalSeconds":60,"dataCollection":"minimal"}"#), appKey: "pk_test")
         let core = harness.makeCore()
         let configuration = await core.configuration
         XCTAssertEqual(configuration.flushInterval, 60)
@@ -36,7 +36,7 @@ final class RemoteConfigTests: XCTestCase {
         XCTAssertEqual(c.backgroundSessionTimeout, 30 * 60)
         XCTAssertEqual(core.remoteVersion.withLock { $0 }, "v2")
         // Saved: the next launch starts with it.
-        XCTAssertEqual(Storage(directory: harness.directory).loadRemoteConfig()?.version, "v2")
+        XCTAssertEqual(Storage(directory: harness.directory).loadRemoteConfig(appKey: "pk_test")?.version, "v2")
 
         // A failed fetch or an unreadable body keeps it.
         harness.transport.enqueueConfigError(URLError(.notConnectedToInternet))
@@ -111,5 +111,75 @@ final class RemoteConfigTests: XCTestCase {
         await core.track("b", properties: [:])
         await core.flushNow()
         XCTAssertNil(try harness.transport.batchBodies().last?.objectValue?["context"]?.objectValue?["consent"])
+    }
+
+    func testACachedKillSwitchAppliesAtLaunch() async throws {
+        let harness = CoreHarness()
+        Storage(directory: harness.directory).saveRemoteConfig(configBody("off", #"{"enabled":false}"#), appKey: "pk_test")
+        let core = harness.makeCore()
+        await core.track("early", properties: [:])
+        await core.flushNow()
+        let queued = await core.queuedCount
+        XCTAssertEqual(queued, 0)
+        XCTAssertTrue(harness.transport.batchRequests.isEmpty)
+    }
+
+    func testAnotherAppKeysCachedConfigIsIgnored() async throws {
+        let harness = CoreHarness()
+        Storage(directory: harness.directory).saveRemoteConfig(configBody("off", #"{"enabled":false}"#), appKey: "pk_staging")
+        let core = harness.makeCore()
+        XCTAssertNil(core.remoteVersion.withLock { $0 })
+        await core.track("a", properties: [:])
+        let queued = await core.queuedCount
+        XCTAssertEqual(queued, 2, "session_start and the event")
+    }
+
+    func testAPushTokenRegisteredWhileOffIsSentWhenCollectionResumes() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.applyRemote(RemoteConfig(version: "off", settings: ["enabled": false]))
+        await core.setPushToken(hex: "ab12")
+        await core.setSubscription(.email, .unsubscribed)
+        await core.track("dropped", properties: [:])
+        await core.flushNow()
+        XCTAssertTrue(harness.transport.batchRequests.isEmpty, "nothing is sent while off")
+        await core.applyRemote(RemoteConfig(version: "on", settings: [:]))
+        await core.drain()
+        await core.flushNow()
+        let types = try harness.transport.batchBodies()
+            .flatMap { $0.objectValue?["events"]?.arrayValue ?? [] }
+            .compactMap { $0.objectValue?["type"]?.stringValue }
+        XCTAssertTrue(types.contains("push_token"))
+        XCTAssertTrue(types.contains("subscription"))
+        XCTAssertFalse(types.contains("track"))
+    }
+
+    func testCrashReportsRespectTheKillSwitch() async throws {
+        let harness = CoreHarness()
+        harness.transport.enqueueDiagnosticsError(URLError(.notConnectedToInternet))
+        var core = harness.makeCore { $0.crashReports = true }
+        await core.recordDiagnostics([DiagnosticReport(kind: "crash", payload: [:], build: "1", osVersion: "18", deviceModel: "x")])
+        await core.drain()
+        XCTAssertEqual(harness.transport.diagnosticsRequests.count, 1, "kept on the device for the next launch")
+        await core.applyRemote(RemoteConfig(version: "off", settings: ["enabled": false]))
+        await core.recordDiagnostics([DiagnosticReport(kind: "hang", payload: [:], build: "1", osVersion: "18", deviceModel: "x")])
+        await core.drain()
+        // The launch path, with the kill switch cached.
+        Storage(directory: harness.directory).saveRemoteConfig(configBody("off", #"{"enabled":false}"#), appKey: "pk_test")
+        core = harness.makeCore { $0.crashReports = true }
+        await core.start()
+        await core.drain()
+        XCTAssertEqual(harness.transport.diagnosticsRequests.count, 1)
+    }
+
+    func testTheConsentRecordMatchesTheSharedFixture() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.setConsent(basis: .consent, documentId: "privacy-policy", documentVersion: "2026-11")
+        await core.track("a", properties: [:])
+        await core.flushNow()
+        let expected = try fixtureJSON("batch-consent").objectValue?["context"]?.objectValue?["consent"]
+        XCTAssertNotNil(expected)
+        XCTAssertEqual(try harness.transport.batchBodies().last?.objectValue?["context"]?.objectValue?["consent"], expected)
     }
 }

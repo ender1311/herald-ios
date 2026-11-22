@@ -104,7 +104,7 @@ actor HeraldCore {
         self.registerForPush = registerForPush
         localConfiguration = configuration
         // The cached remote settings apply before anything is recorded; the launch fetch refreshes them.
-        remote = storage.loadRemoteConfig()
+        remote = storage.loadRemoteConfig(appKey: configuration.appKey)
         self.configuration = remote?.applied(to: configuration) ?? configuration
         self.remoteVersion = remoteVersion
         remoteVersion.withLock { [remote] in $0 = remote?.version }
@@ -135,13 +135,15 @@ actor HeraldCore {
 
     /// Publishes the cached cards once the store is listening.
     func start() async {
-        fetchConfig()
+        if configFetchedAt == nil { fetchConfig() }  // one launch fetch, even if a foreground came first
         let visible = visibleCards()
         scheduleExpiryRefresh(visible)
         await output.cardsChanged(visible)
         // A launch only asks for the token; it never changes the push subscription.
         if state.enabled, state.pushToken == nil { restorePushIfAuthorized(resubscribe: false) }
-        if state.enabled, let crashReports { spawn { core in await crashReports.send { await core.state.enabled } } }
+        if state.enabled, remoteCollects, let crashReports {
+            spawn { core in await crashReports.send { await core.collectsNow } }
+        }
         if state.enabled, configuration.trackLifecycleEvents { await recordAppVersion() }
     }
 
@@ -160,7 +162,8 @@ actor HeraldCore {
                 "previous_version": .string(previous), "previous_build": .string(state.appBuild ?? ""),
             ], session: false)
         }
-        guard state.appVersion != version || state.appBuild != build else { return }
+        // Under the kill switch the event was dropped, so the version isn't stored: the update reports once it resumes.
+        guard remoteCollects, state.appVersion != version || state.appBuild != build else { return }
         state.appVersion = version
         state.appBuild = build
         persist()
@@ -193,14 +196,14 @@ actor HeraldCore {
 
     /// MetricKit crash and hang reports: kept and sent only while enabled and `crashReports` is on.
     func recordDiagnostics(_ reports: [DiagnosticReport]) {
-        guard state.enabled, let crashReports else { return }
+        guard state.enabled, remoteCollects, let crashReports else { return }
         spawn { core in
             let device = await core.deviceInfo.current()
             // Consent may have changed during the await; add() is synchronous, so nothing can slip in after this.
-            guard core.state.enabled else { return }
+            guard core.state.enabled, core.remoteCollects else { return }
             let binary = Bundle.main.executableURL?.lastPathComponent
             crashReports.add(reports.map { $0.item(device: device, appBinaryName: binary) })
-            await crashReports.send { await core.state.enabled }
+            await crashReports.send { await core.collectsNow }
         }
     }
 
@@ -632,7 +635,9 @@ actor HeraldCore {
     }
 
     private func enqueue(_ type: String, _ fields: [String: HeraldValue], sessionId: String? = nil, at date: Date? = nil) {
-        guard remoteCollects else { return }
+        // Push tokens and subscriptions are queued under the kill switch (and sent once it lifts), so a device that
+        // registered or unsubscribed meanwhile isn't lost; nothing is sent while it is on.
+        guard remoteCollects || Self.deliveryTypes.contains(type) else { return }
         var event = fields
         event["id"] = .string(makeId())
         event["type"] = .string(type)
@@ -1113,6 +1118,9 @@ actor HeraldCore {
     // MARK: - Remote config
 
     private var remoteCollects: Bool { remote?.collects ?? true }
+    /// On, and not turned off remotely: crash reports go out only then.
+    var collectsNow: Bool { state.enabled && remoteCollects }
+    static let deliveryTypes: Set<String> = ["push_token", "subscription"]
 
     /// Fetches the remote settings in a child task (startup never waits). A network or parse error, or any status but
     /// 200 / 304, keeps what is applied. Skipped while the app turned the SDK off.
@@ -1127,7 +1135,7 @@ actor HeraldCore {
             guard let (data, response) = try? await core.transport.send(sent), response.statusCode == 200,
                 let config = RemoteConfig.decode(data)
             else { return }
-            core.storage.saveRemoteConfig(data)
+            core.storage.saveRemoteConfig(data, appKey: core.localConfiguration.appKey)
             core.applyRemote(config)
         }
     }
@@ -1139,13 +1147,19 @@ actor HeraldCore {
         let previousInterval = configuration.flushInterval
         configuration = config.applied(to: localConfiguration)
         if !config.collects {
-            // The kill switch: what is queued is never sent.
-            queue.removeAll()
+            // The kill switch: queued events are never sent, except push tokens and subscriptions.
+            queue.remove(ids: Set(queue.entries.filter { !Self.deliveryTypes.contains($0.event["type"]?.stringValue ?? "") }.map(\.id)))
             flushTimer?.cancel()
             flushTimer = nil
             Log.info("Collection is turned off remotely")
-        } else if isForeground, state.enabled, !wasCollecting || configuration.flushInterval != previousInterval {
-            startFlushTimer()
+        } else {
+            if !wasCollecting, state.enabled {
+                resendPushToken()
+                scheduleFlush()
+            }
+            if isForeground, state.enabled, !wasCollecting || configuration.flushInterval != previousInterval {
+                startFlushTimer()
+            }
         }
     }
 
