@@ -27,29 +27,21 @@ private func names(_ events: [[String: HeraldValue]]) -> [String] {
 }
 
 final class LifecycleTests: XCTestCase {
-    private func lifecycleCore(_ harness: CoreHarness, deviceInfo: DeviceInfoProvider = FixtureDeviceInfo(),
-                               _ configure: (inout HeraldConfiguration) -> Void = { _ in }) -> HeraldCore {
-        harness.makeCore(deviceInfo: deviceInfo) {
-            $0.trackLifecycleEvents = true
-            configure(&$0)
-        }
-    }
-
     func testInstallThenNormalLaunchThenUpdate() async throws {
         let harness = CoreHarness()
-        var core = lifecycleCore(harness)
+        var core = harness.makeCore(lifecycle: true)
         await core.start()
         var events = try await sentEvents(harness, core)
-        XCTAssertEqual(names(events), ["session_start", "$app_installed"])
-        XCTAssertEqual(events[1]["properties"], ["version": "4.2.0", "build": "812"])
+        XCTAssertEqual(names(events), ["$app_installed"], "a launch alone starts no session")
+        XCTAssertEqual(events[0]["properties"], ["version": "4.2.0", "build": "812"])
 
         // Same version: nothing.
-        core = lifecycleCore(harness)
+        core = harness.makeCore(lifecycle: true)
         await core.start()
         let sent = try await sentEvents(harness, core)
-        XCTAssertEqual(names(sent).count, 2)
+        XCTAssertEqual(names(sent).count, 1)
 
-        core = lifecycleCore(harness, deviceInfo: VersionInfo(version: "4.3.0", build: "900"))
+        core = harness.makeCore(deviceInfo: VersionInfo(version: "4.3.0", build: "900"), lifecycle: true)
         await core.start()
         events = try await sentEvents(harness, core)
         XCTAssertEqual(names(events).last, "$app_updated")
@@ -62,7 +54,7 @@ final class LifecycleTests: XCTestCase {
         let harness = CoreHarness()
         // An SDK before 0.6.0 left state without a version.
         Storage(directory: harness.directory).saveState(PersistedState(deviceId: "d1"))
-        let core = lifecycleCore(harness)
+        let core = harness.makeCore(lifecycle: true)
         await core.start()
         let sent = try await sentEvents(harness, core)
         XCTAssertEqual(names(sent), [])
@@ -72,7 +64,7 @@ final class LifecycleTests: XCTestCase {
 
     func testOpenedForegroundAndBackground() async throws {
         let harness = CoreHarness()
-        let core = lifecycleCore(harness)
+        let core = harness.makeCore(lifecycle: true)
         await core.pushResponse(messageId: "m1", decisionId: "d1", action: "open", buttonId: nil)
         await core.appDidBecomeActive()
         _ = await core.appDidEnterBackground()
@@ -88,7 +80,7 @@ final class LifecycleTests: XCTestCase {
 
     func testOpenedWithoutPushAndOffSwitch() async throws {
         var harness = CoreHarness()
-        var core = lifecycleCore(harness)
+        var core = harness.makeCore(lifecycle: true)
         await core.appDidBecomeActive()
         let opened = try await sentEvents(harness, core).first { $0["name"] == "$app_opened" }
         XCTAssertEqual(opened?["properties"], ["from_push": false])
@@ -104,11 +96,67 @@ final class LifecycleTests: XCTestCase {
 
     func testLifecycleEventsSendInMinimalMode() async throws {
         let harness = CoreHarness()
-        let core = lifecycleCore(harness) { $0.deviceDataCollection = .minimal }
+        let core = harness.makeCore(lifecycle: true) { $0.deviceDataCollection = .minimal }
         await core.start()
         await core.appDidBecomeActive()
         let sent = try await sentEvents(harness, core)
-        XCTAssertEqual(names(sent), ["session_start", "$app_installed", "$app_opened", "$app_foreground"])
+        XCTAssertEqual(names(sent), ["$app_installed", "session_start", "$app_opened", "$app_foreground"])
+    }
+
+    func testGoingToTheBackgroundAfterAnIdleForegroundStartsNoSession() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore(lifecycle: true)
+        await core.appDidBecomeActive()
+        harness.clock.advance(35 * 60)  // past the 30-minute foreground timeout, nothing tracked
+        _ = await core.appDidEnterBackground()
+        let sent = try await sentEvents(harness, core)
+        XCTAssertEqual(names(sent), ["session_start", "$app_opened", "$app_foreground", "$app_background"])
+        XCTAssertEqual(sent.last?["sessionId"], sent.first?["sessionId"])
+    }
+
+    func testOnlyARealMoveToTheForegroundSendsForeground() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore(lifecycle: true)
+        await core.appDidBecomeActive()
+        await core.appDidBecomeActive()  // after a permission alert, Control Center or Face ID: no background between
+        _ = await core.appDidEnterBackground()
+        await core.appDidBecomeActive()
+        await core.appDidBecomeActive()
+        let lifecycle = names(try await sentEvents(harness, core)).filter { $0.hasPrefix("$") }
+        XCTAssertEqual(lifecycle, ["$app_opened", "$app_foreground", "$app_background", "$app_foreground"])
+    }
+
+    func testColdStartAfterTheBackgroundUsesTheBackgroundTimeout() async throws {
+        let harness = CoreHarness()
+        let timeouts = { (c: inout HeraldConfiguration) in
+            c.foregroundSessionTimeout = 60 * 60
+            c.backgroundSessionTimeout = 5 * 60
+        }
+        var core = harness.makeCore(timeouts)
+        await core.appDidBecomeActive()
+        await core.appDidEnterBackground().value  // its flush ends before the next launch reads the queue
+        harness.clock.advance(10 * 60)
+        core = harness.makeCore(timeouts)  // killed in the background, launched again
+        await core.appDidBecomeActive()
+        let sent = try await sentEvents(harness, core)
+        XCTAssertEqual(names(sent), ["session_start", "session_end", "session_start"])
+    }
+
+    func testDeepLinkWithoutAHostSendsTheSchemeOnly() async throws {
+        let cases: [(String, HeraldValue)] = [
+            ("mailto:a@b.com?subject=hi", ["scheme": "mailto", "source": "link"]),
+            ("tel:+15551234567", ["scheme": "tel", "source": "link"]),
+            ("https://x.com/a?b", ["scheme": "https", "host": "x.com", "path": "/a", "query": "b", "source": "link"]),
+            ("myapp://screen/x", ["scheme": "myapp", "host": "screen", "path": "/x", "source": "link"]),
+            ("myapp://screen/x;jsessionid=s", ["scheme": "myapp", "host": "screen", "path": "/x", "source": "link"]),
+        ]
+        for (url, expected) in cases {
+            let harness = CoreHarness()
+            let core = harness.makeCore { $0.trackDeepLinkQuery = true }
+            await core.deepLinkOpened(URL(string: url)!, source: "link")
+            let event = try await sentEvents(harness, core).last
+            XCTAssertEqual(event?["properties"], expected, url)
+        }
     }
 
     func testDeepLinkLeavesOutQueryByDefault() async throws {

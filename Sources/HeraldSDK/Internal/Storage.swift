@@ -47,6 +47,8 @@ struct PersistedState: Codable, Equatable {
     /// Sessions started on this install (`session_index` of the latest) and the latest session's id.
     var sessionIndex = 0
     var lastSessionId: String?
+    /// The app went to the background and hasn't come back: sessions time out after `backgroundSessionTimeout`.
+    var inBackground = false
 
     init(deviceId: String) {
         self.deviceId = deviceId
@@ -56,6 +58,7 @@ struct PersistedState: Codable, Equatable {
         case deviceId, userId, userToken, pendingTokens, dropped, enabled, session, lastShown, lastDisplayAt
         case pendingMessageIds, dismissedCardIds, messagesETag, pushToken, deferredPushSubscription, recentPushOpens
         case impressedCardIds, userTokenRequired, liveActivityToken, heraldId, appVersion, appBuild, sessionIndex, lastSessionId
+        case inBackground
     }
 
     /// Every field but the device id is optional, so state written by an older SDK version still loads.
@@ -84,6 +87,7 @@ struct PersistedState: Codable, Equatable {
         appBuild = c.lenient(String.self, .appBuild)
         sessionIndex = c.lenient(Int.self, .sessionIndex) ?? 0
         lastSessionId = c.lenient(String.self, .lastSessionId)
+        inBackground = c.lenient(Bool.self, .inBackground) ?? false
     }
 }
 

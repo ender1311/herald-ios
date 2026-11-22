@@ -22,7 +22,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             options.logLevel = .debug
             #if DEBUG
             if let seconds = DebugLaunch.value("-LumenSessionTimeout").flatMap(TimeInterval.init) {
-                options.sessionTimeout = seconds
+                options.foregroundSessionTimeout = seconds
+                options.backgroundSessionTimeout = seconds
             }
             #endif
         }

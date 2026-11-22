@@ -27,7 +27,7 @@ final class HeraldFacadeTests: XCTestCase {
         let bodies = try transport.batchBodies().compactMap(\.objectValue)
         XCTAssertEqual(bodies.map { $0["userId"] ?? .null }, [.null, "u_1"], "pre-login events go out as an anonymous batch")
         let types = bodies.map { $0["events"]?.arrayValue?.compactMap { $0.objectValue?["type"]?.stringValue } ?? [] }
-        XCTAssertEqual(types, [["session_start", "track", "track", "track", "track"], ["identify", "track", "attributes"]])
+        XCTAssertEqual(types, [["track", "session_start", "track", "track", "track"], ["identify", "track", "attributes"]])
         let names = bodies[0]["events"]?.arrayValue?.compactMap { $0.objectValue?["name"]?.stringValue }
         XCTAssertEqual(names, ["$app_installed", "before_configure", "$app_opened", "$app_foreground"], "lifecycle events are on by default")
         XCTAssertEqual(herald.contentCards.cards.map(\.id), ["msg_1", "msg_3", "msg_4"])

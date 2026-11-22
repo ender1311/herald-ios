@@ -175,12 +175,12 @@ struct CoreHarness {
     }
 
     func makeCore(
-        deviceInfo: DeviceInfoProvider = FixtureDeviceInfo(), queueCap: Int = EventQueue.defaultCap,
+        deviceInfo: DeviceInfoProvider = FixtureDeviceInfo(), queueCap: Int = EventQueue.defaultCap, lifecycle: Bool = false,
         _ configure: (inout HeraldConfiguration) -> Void = { _ in }
     ) -> HeraldCore {
         var configuration = HeraldConfiguration(appKey: "pk_test", endpoint: URL(string: "https://herald.example.com")!)
         configuration.flushAt = 100_000  // tests flush explicitly
-        configuration.trackLifecycleEvents = false  // LifecycleTests turn it on
+        configuration.trackLifecycleEvents = lifecycle  // off: most tests assert exact queues
         configure(&configuration)
         let clock = clock
         let ids = ids

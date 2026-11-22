@@ -59,8 +59,6 @@ actor HeraldCore {
     /// The server refused the app key: nothing is sent (and nothing dropped) until the next launch.
     private(set) var appKeyRejected = false
     private(set) var isForeground = false
-    /// Backgrounded since the last foreground: sessions then time out after `backgroundSessionTimeout`.
-    private var inBackground = false
     /// No state on disk at launch: the first launch of this install.
     private let isFreshInstall: Bool
     /// `$app_opened` waits for this launch's first foreground; a push tap seen before it sets `from_push`.
@@ -139,12 +137,12 @@ actor HeraldCore {
         let version = Validation.truncated(info.appVersion, 64)
         let build = Validation.truncated(info.appBuild, 64)
         if isFreshInstall {
-            recordLifecycle("$app_installed", ["version": .string(version), "build": .string(build)])
+            recordLifecycle("$app_installed", ["version": .string(version), "build": .string(build)], session: false)
         } else if let previous = state.appVersion, previous != version || state.appBuild != build {
             recordLifecycle("$app_updated", [
                 "version": .string(version), "build": .string(build),
                 "previous_version": .string(previous), "previous_build": .string(state.appBuild ?? ""),
-            ])
+            ], session: false)
         }
         guard state.appVersion != version || state.appBuild != build else { return }
         state.appVersion = version
@@ -152,22 +150,27 @@ actor HeraldCore {
         persist()
     }
 
-    private func recordLifecycle(_ name: String, _ properties: [String: HeraldValue] = [:]) {
+    /// `session` false queues the event without starting or ending a session (going to the background, launch).
+    private func recordLifecycle(_ name: String, _ properties: [String: HeraldValue] = [:], session: Bool = true) {
         guard state.enabled, configuration.trackLifecycleEvents else { return }
-        record("track", ["name": .string(name), "properties": .object(properties)])
+        let fields: [String: HeraldValue] = ["name": .string(name), "properties": .object(properties)]
+        if session { record("track", fields) } else { enqueue("track", fields) }
     }
 
     /// `$deep_link_opened` for a deep link the SDK routes. No query or fragment unless `trackDeepLinkQuery`; scheme
-    /// and host only in minimal data collection.
+    /// and host only in minimal data collection. A URL without a host (`mailto:`, `tel:`) sends its scheme only, so an
+    /// address or number never reaches the event log.
     func deepLinkOpened(_ url: URL, source: String) {
         guard state.enabled, configuration.trackDeepLinks else { return }
         let t = { (s: String) in HeraldValue.string(Validation.truncated(s, Validation.maxName)) }
-        var properties: [String: HeraldValue] = [
-            "scheme": t(url.scheme ?? ""), "host": t(url.host ?? ""), "source": .string(source),
-        ]
-        if configuration.deviceDataCollection == .standard {
-            properties["path"] = t(url.path)
-            if configuration.trackDeepLinkQuery, let query = url.query { properties["query"] = t(query) }
+        var properties: [String: HeraldValue] = ["scheme": t(url.scheme ?? ""), "source": .string(source)]
+        if let host = url.host, !host.isEmpty {
+            properties["host"] = t(host)
+            if configuration.deviceDataCollection == .standard {
+                // `;params` (session ids) are cut, like the query.
+                properties["path"] = t(String(url.path.prefix { $0 != ";" }))
+                if configuration.trackDeepLinkQuery, let query = url.query { properties["query"] = t(query) }
+            }
         }
         record("track", ["name": "$deep_link_opened", "properties": .object(properties)])
     }
@@ -376,17 +379,22 @@ actor HeraldCore {
     /// no per-send key, so nothing is deduplicated.
     func pushResponse(messageId: String, decisionId: String?, action: String, buttonId: String?) {
         guard state.enabled else { return }
-        if action != "dismiss" { openedFromPush = true }
         switch action {
         case "button":
             let opened = recordPush(messageId: messageId, decisionId: decisionId, action: "open", buttonId: nil)
             recordPush(messageId: messageId, decisionId: decisionId, action: "button", buttonId: buttonId)
-            if opened { fire(.pushOpen) }
+            if opened { pushOpened() }
         case "open":
-            if recordPush(messageId: messageId, decisionId: decisionId, action: "open", buttonId: nil) { fire(.pushOpen) }
+            if recordPush(messageId: messageId, decisionId: decisionId, action: "open", buttonId: nil) { pushOpened() }
         default:
             recordPush(messageId: messageId, decisionId: decisionId, action: action, buttonId: buttonId)
         }
+    }
+
+    /// A first (not redelivered) push open: it marks this launch as `from_push` and fires `push_open` triggers.
+    private func pushOpened() {
+        openedFromPush = true
+        fire(.pushOpen)
     }
 
     /// Logs one push interaction; false when it was a repeat or invalid.
@@ -634,7 +642,7 @@ actor HeraldCore {
     /// inactivity, ends it and starts a new one. A session persisted by an earlier launch continues the same way.
     func ensureSession() {
         let date = now()
-        let timeout = inBackground ? configuration.backgroundSessionTimeout : configuration.foregroundSessionTimeout
+        let timeout = state.inBackground ? configuration.backgroundSessionTimeout : configuration.foregroundSessionTimeout
         if var session = state.session {
             if date.timeIntervalSince(session.lastActivityAt) < timeout {
                 session.lastActivityAt = date
@@ -679,15 +687,21 @@ actor HeraldCore {
 
     // MARK: - Lifecycle
 
-    /// `lifecycle` false (re-enabled while in the foreground) sends no lifecycle events.
+    /// Every `didBecomeActive`. Lifecycle events go out only on a real move to the foreground: the launch's first
+    /// activation or one after `appDidEnterBackground`, never after an alert, Control Center or Face ID sheet.
+    /// `lifecycle` false (re-enabled while in the foreground) sends none.
     func appDidBecomeActive(lifecycle: Bool = true) {
         isForeground = true
         let opened = appOpenPending
         appOpenPending = false
         guard state.enabled else { return }
-        ensureSession()
-        inBackground = false
-        if lifecycle {
+        ensureSession()  // uses the background timeout when coming back from the background
+        let fromBackground = opened || state.inBackground
+        if state.inBackground {
+            state.inBackground = false
+            persist()
+        }
+        if lifecycle, fromBackground {
             if opened { recordLifecycle("$app_opened", ["from_push": .bool(openedFromPush)]) }
             recordLifecycle("$app_foreground")
         }
@@ -700,9 +714,12 @@ actor HeraldCore {
     /// Persists session activity and starts (or joins) a flush. Returns the flush task so the caller can
     /// hold its background-task assertion until the upload really finishes, without blocking recording.
     func appDidEnterBackground() -> Task<Void, Never> {
-        recordLifecycle("$app_background")
         isForeground = false
-        inBackground = true
+        // Persisted: a cold start after a kill in the background decides continuation with the background timeout.
+        state.inBackground = true
+        persist()
+        // Never starts or ends a session: going to the background isn't activity.
+        recordLifecycle("$app_background", session: false)
         flushTimer?.cancel()
         flushTimer = nil
         intervalRetry?.cancel()
