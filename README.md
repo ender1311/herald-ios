@@ -45,6 +45,8 @@ Herald checks each event on its own: an event it can't accept is left out of an 
 
 From 0.6.0 the SDK sends lifecycle events on its own (`$app_installed`, `$app_updated`, `$app_opened`, `$app_foreground`, `$app_background`; turn off with `trackLifecycleEvents = false`) and `$deep_link_opened` for links that go through `openDeepLink` or a push tap (`trackDeepLinks`; no query unless `trackDeepLinkQuery`). Sessions have separate `foregroundSessionTimeout` and `backgroundSessionTimeout` (30 minutes each; `sessionTimeout` is deprecated and sets both), continue across a cold start within the foreground timeout, and `session_start` carries `session_index` and `previous_session_id`. Queued events older than `maxQueuedEventAge` (30 days) are dropped and counted in `dropped`.
 
+The SDK also fetches remote settings from the console (Settings, SDK settings) at launch and at most hourly on foreground, and applies the cached ones at launch: they override your configuration, and turning off "Collect events" there stops collection and clears the queue until it is turned back on. `Herald.shared.remoteConfigVersion` shows the version in use. `setConsent(basis:documentId:documentVersion:)` / `clearConsent()` record the lawful basis your app uses, sent with each batch for your compliance records; it doesn't change what is collected.
+
 The full guide, including push setup, is at https://heraldsdk.com/docs.
 
 ## Support ID

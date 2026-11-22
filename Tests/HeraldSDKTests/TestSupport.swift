@@ -52,6 +52,7 @@ final class FakeTransport: HeraldTransport {
         var batchResponses: [Result<FakeResponse, URLError>] = []
         var messageResponses: [FakeResponse] = []
         var diagnosticsResponses: [Result<FakeResponse, URLError>] = []
+        var configResponses: [Result<FakeResponse, URLError>] = []
         var batchDelayNanoseconds: UInt64 = 0
     }
 
@@ -65,6 +66,9 @@ final class FakeTransport: HeraldTransport {
     func enqueueBatch(_ response: FakeResponse) { state.withLock { $0.batchResponses.append(.success(response)) } }
     func enqueueBatchError(_ error: URLError) { state.withLock { $0.batchResponses.append(.failure(error)) } }
     func enqueueMessages(_ response: FakeResponse) { state.withLock { $0.messageResponses.append(response) } }
+    var configRequests: [URLRequest] { requests.filter { $0.url?.path.hasSuffix("/sdk/config") == true } }
+    func enqueueConfig(_ response: FakeResponse) { state.withLock { $0.configResponses.append(.success(response)) } }
+    func enqueueConfigError(_ error: URLError) { state.withLock { $0.configResponses.append(.failure(error)) } }
     var diagnosticsRequests: [URLRequest] { requests.filter { $0.url?.path.hasSuffix("/sdk/diagnostics") == true } }
     func enqueueDiagnostics(_ response: FakeResponse) { state.withLock { $0.diagnosticsResponses.append(.success(response)) } }
     func enqueueDiagnosticsError(_ error: URLError) { state.withLock { $0.diagnosticsResponses.append(.failure(error)) } }
@@ -76,8 +80,14 @@ final class FakeTransport: HeraldTransport {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let isBatch = request.url?.path.hasSuffix("/sdk/batch") == true
         let isDiagnostics = request.url?.path.hasSuffix("/sdk/diagnostics") == true
+        let isConfig = request.url?.path.hasSuffix("/sdk/config") == true
         let result: Result<FakeResponse, URLError> = state.withLock { s in
             s.requests.append(request)
+            if isConfig {
+                return s.configResponses.isEmpty
+                    ? .success(FakeResponse(status: 304))
+                    : s.configResponses.removeFirst()
+            }
             if isDiagnostics {
                 return s.diagnosticsResponses.isEmpty
                     ? .success(FakeResponse(status: 200, body: Data(#"{"data":{"stored":1}}"#.utf8)))

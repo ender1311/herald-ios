@@ -22,7 +22,16 @@ actor HeraldCore {
     static let anonymousKey = "anonymous"
     static let maxRecentPushOpens = 50
 
-    let configuration: HeraldConfiguration
+    /// What the app configured; `configuration` is it with the remote settings laid over.
+    private let localConfiguration: HeraldConfiguration
+    private(set) var configuration: HeraldConfiguration
+    /// The cached or fetched remote settings. `enabled: false` (the kill switch) stops collection and sending.
+    private var remote: RemoteConfig?
+    /// `Herald.remoteConfigVersion`, readable from any thread.
+    nonisolated let remoteVersion: OSAllocatedUnfairLock<String?>
+    /// The last config fetch: at launch, then on a foreground at most once an hour.
+    private var configFetchedAt: Date?
+    static let configFetchInterval: TimeInterval = 3600
     private let storage: Storage
     private let transport: HeraldTransport
     private let deviceInfo: DeviceInfoProvider
@@ -87,12 +96,18 @@ actor HeraldCore {
         bundleId: String = Bundle.main.bundleIdentifier ?? "",
         registerForPush: @escaping @Sendable () async -> Void = PushRegistrar.register,
         queueCap: Int = EventQueue.defaultCap,
-        heraldIdMirror: OSAllocatedUnfairLock<String?> = OSAllocatedUnfairLock(initialState: nil)
+        heraldIdMirror: OSAllocatedUnfairLock<String?> = OSAllocatedUnfairLock(initialState: nil),
+        remoteVersion: OSAllocatedUnfairLock<String?> = OSAllocatedUnfairLock(initialState: nil)
     ) {
         self.heraldIdMirror = heraldIdMirror
         self.bundleId = bundleId
         self.registerForPush = registerForPush
-        self.configuration = configuration
+        localConfiguration = configuration
+        // The cached remote settings apply before anything is recorded; the launch fetch refreshes them.
+        remote = storage.loadRemoteConfig()
+        self.configuration = remote?.applied(to: configuration) ?? configuration
+        self.remoteVersion = remoteVersion
+        remoteVersion.withLock { [remote] in $0 = remote?.version }
         self.storage = storage
         self.transport = transport
         self.deviceInfo = deviceInfo
@@ -120,6 +135,7 @@ actor HeraldCore {
 
     /// Publishes the cached cards once the store is listening.
     func start() async {
+        fetchConfig()
         let visible = visibleCards()
         scheduleExpiryRefresh(visible)
         await output.cardsChanged(visible)
@@ -616,6 +632,7 @@ actor HeraldCore {
     }
 
     private func enqueue(_ type: String, _ fields: [String: HeraldValue], sessionId: String? = nil, at date: Date? = nil) {
+        guard remoteCollects else { return }
         var event = fields
         event["id"] = .string(makeId())
         event["type"] = .string(type)
@@ -692,6 +709,7 @@ actor HeraldCore {
     /// `lifecycle` false (re-enabled while in the foreground) sends none.
     func appDidBecomeActive(lifecycle: Bool = true) {
         isForeground = true
+        if configFetchedAt.map({ now().timeIntervalSince($0) >= Self.configFetchInterval }) ?? true { fetchConfig() }
         let opened = appOpenPending
         appOpenPending = false
         guard state.enabled else { return }
@@ -908,11 +926,11 @@ actor HeraldCore {
 
     /// Sends queued events in batches until the queue is empty, a batch must be retried, or the SDK is disabled.
     private func runFlush() async {
-        guard state.enabled, !appKeyRejected else { return }
+        guard state.enabled, remoteCollects, !appKeyRejected else { return }
         if let nextAttemptAt, now() < nextAttemptAt { return }
         dropExpiredEvents()
 
-        while state.enabled, !queue.entries.isEmpty {
+        while state.enabled, remoteCollects, !queue.entries.isEmpty {
             let (batch, userId) = nextBatch()
             guard !batch.isEmpty else { break }
             let droppedReported = state.dropped
@@ -1039,7 +1057,14 @@ actor HeraldCore {
     private func batchBody(
         _ batch: [QueuedEvent], userId: String?, dropped: Int, deviceId: String? = nil
     ) async -> (Data, [QueuedEvent])? {
-        let context = DeviceContext.build(await deviceInfo.current(), collection: configuration.deviceDataCollection)
+        var context = DeviceContext.build(await deviceInfo.current(), collection: configuration.deviceDataCollection)
+        if let consent = state.consent, case .object(var fields) = context {
+            var record: [String: HeraldValue] = ["basis": .string(consent.basis), "recordedAt": .string(WireDate.format(consent.recordedAt))]
+            if let id = consent.documentId { record["documentId"] = .string(id) }
+            if let version = consent.documentVersion { record["documentVersion"] = .string(version) }
+            fields["consent"] = .object(record)
+            context = .object(fields)
+        }
         var events = batch
         while !events.isEmpty {
             let payload: HeraldValue = [
@@ -1085,6 +1110,61 @@ actor HeraldCore {
         return request
     }
 
+    // MARK: - Remote config
+
+    private var remoteCollects: Bool { remote?.collects ?? true }
+
+    /// Fetches the remote settings in a child task (startup never waits). A network or parse error, or any status but
+    /// 200 / 304, keeps what is applied. Skipped while the app turned the SDK off.
+    private func fetchConfig() {
+        guard state.enabled else { return }
+        configFetchedAt = now()
+        var request = makeRequest(path: "api/v1/sdk/config", userId: nil)
+        request.httpMethod = "GET"
+        if let version = remote?.version { request.setValue("\"\(version)\"", forHTTPHeaderField: "If-None-Match") }
+        let sent = request
+        spawn { core in
+            guard let (data, response) = try? await core.transport.send(sent), response.statusCode == 200,
+                let config = RemoteConfig.decode(data)
+            else { return }
+            core.storage.saveRemoteConfig(data)
+            core.applyRemote(config)
+        }
+    }
+
+    func applyRemote(_ config: RemoteConfig) {
+        let wasCollecting = remoteCollects
+        remote = config
+        remoteVersion.withLock { $0 = config.version }
+        let previousInterval = configuration.flushInterval
+        configuration = config.applied(to: localConfiguration)
+        if !config.collects {
+            // The kill switch: what is queued is never sent.
+            queue.removeAll()
+            flushTimer?.cancel()
+            flushTimer = nil
+            Log.info("Collection is turned off remotely")
+        } else if isForeground, state.enabled, !wasCollecting || configuration.flushInterval != previousInterval {
+            startFlushTimer()
+        }
+    }
+
+    // MARK: - Consent
+
+    func setConsent(basis: ConsentBasis, documentId: String?, documentVersion: String?) {
+        let documentId = documentId?.isEmpty == true ? nil : documentId
+        let documentVersion = documentVersion?.isEmpty == true ? nil : documentVersion
+        if rejected("setConsent", Validation.length("documentId", documentId ?? "", min: 0, max: 100)
+            ?? Validation.length("documentVersion", documentVersion ?? "", min: 0, max: 100)) { return }
+        state.consent = ConsentRecord(basis: basis.rawValue, documentId: documentId, documentVersion: documentVersion, recordedAt: now())
+        persist()
+    }
+
+    func clearConsent() {
+        state.consent = nil
+        persist()
+    }
+
     // MARK: - Message sync
 
     func scheduleSync(thenFire trigger: TriggerEvent?) {
@@ -1118,7 +1198,7 @@ actor HeraldCore {
     /// Fetches cards and in-app messages; a 304 keeps the cache. Waits for `setUserToken` (which syncs) while
     /// `syncAwaitsToken`.
     func syncMessages() async {
-        guard state.enabled else { return }
+        guard state.enabled, remoteCollects else { return }
         guard !isSyncing else {
             // A sync for a possibly different user is in flight: run once more when it finishes.
             resyncRequested = true

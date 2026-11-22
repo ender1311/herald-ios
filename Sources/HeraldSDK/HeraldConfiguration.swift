@@ -8,6 +8,16 @@ public enum DeviceDataCollection: String, Sendable {
     case minimal
 }
 
+/// The GDPR lawful basis recorded with `Herald.setConsent`.
+public enum ConsentBasis: String, Sendable {
+    case consent
+    case contract
+    case legalObligation = "legal_obligation"
+    case vitalInterests = "vital_interests"
+    case publicTask = "public_task"
+    case legitimateInterests = "legitimate_interests"
+}
+
 public enum HeraldLogLevel: Int, Sendable, Comparable {
     case none = 0, error, warning, info, debug
 

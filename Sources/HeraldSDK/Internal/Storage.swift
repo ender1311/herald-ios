@@ -1,5 +1,13 @@
 import Foundation
 
+/// The app's `setConsent` record, sent in each batch's `context.consent` while set.
+struct ConsentRecord: Codable, Equatable {
+    var basis: String
+    var documentId: String?
+    var documentVersion: String?
+    var recordedAt: Date
+}
+
 struct SessionState: Codable, Equatable {
     var id: String
     var startedAt: Date
@@ -49,6 +57,7 @@ struct PersistedState: Codable, Equatable {
     var lastSessionId: String?
     /// The app went to the background and hasn't come back: sessions time out after `backgroundSessionTimeout`.
     var inBackground = false
+    var consent: ConsentRecord?
 
     init(deviceId: String) {
         self.deviceId = deviceId
@@ -58,7 +67,7 @@ struct PersistedState: Codable, Equatable {
         case deviceId, userId, userToken, pendingTokens, dropped, enabled, session, lastShown, lastDisplayAt
         case pendingMessageIds, dismissedCardIds, messagesETag, pushToken, deferredPushSubscription, recentPushOpens
         case impressedCardIds, userTokenRequired, liveActivityToken, heraldId, appVersion, appBuild, sessionIndex, lastSessionId
-        case inBackground
+        case inBackground, consent
     }
 
     /// Every field but the device id is optional, so state written by an older SDK version still loads.
@@ -88,6 +97,7 @@ struct PersistedState: Codable, Equatable {
         sessionIndex = c.lenient(Int.self, .sessionIndex) ?? 0
         lastSessionId = c.lenient(String.self, .lastSessionId)
         inBackground = c.lenient(Bool.self, .inBackground) ?? false
+        consent = c.lenient(ConsentRecord.self, .consent)
     }
 }
 
@@ -118,6 +128,8 @@ struct Storage {
     private var stateURL: URL { directory.appendingPathComponent("state.json") }
     private var messagesURL: URL { directory.appendingPathComponent("messages.json") }
     var diagnosticsURL: URL { directory.appendingPathComponent("diagnostics.json") }
+    /// The last good `GET /api/v1/sdk/config` body: app configuration, not personal data, so a wipe keeps it.
+    var remoteConfigURL: URL { directory.appendingPathComponent("remote-config.json") }
     /// The opt-out lives in its own marker file (as on Android), so an unreadable state.json can never
     /// re-enable a disabled SDK.
     private var disabledMarkerURL: URL { Self.disabledMarkerURL(in: directory) }
@@ -145,6 +157,18 @@ struct Storage {
             try JSONEncoder().encode(state).write(to: stateURL, options: .atomic)
         } catch {
             Log.error("Could not save state: \(error.localizedDescription)")
+        }
+    }
+
+    func loadRemoteConfig() -> RemoteConfig? {
+        (try? Data(contentsOf: remoteConfigURL)).flatMap(RemoteConfig.decode)
+    }
+
+    func saveRemoteConfig(_ data: Data) {
+        do {
+            try data.write(to: remoteConfigURL, options: .atomic)
+        } catch {
+            Log.error("Could not cache the remote config: \(error.localizedDescription)")
         }
     }
 

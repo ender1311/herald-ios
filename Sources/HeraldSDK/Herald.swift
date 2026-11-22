@@ -34,6 +34,7 @@ public final class Herald: Sendable {
     /// order, so that is where the SDK ends up), else as loaded by the core; nil until either happens.
     private let enabledState = OSAllocatedUnfairLock<Bool?>(initialState: nil)
     private let heraldIdState = OSAllocatedUnfairLock<String?>(initialState: nil)
+    private let remoteVersion = OSAllocatedUnfairLock<String?>(initialState: nil)
 
     init() {
         contentCards = ContentCardStore()
@@ -77,7 +78,7 @@ public final class Herald: Sendable {
         Task.detached(priority: .utility) {
             let core = HeraldCore(
                 configuration: configuration, storage: storage(), transport: transport, deviceInfo: deviceInfo,
-                output: bridge, heraldIdMirror: self.heraldIdState
+                output: bridge, heraldIdMirror: self.heraldIdState, remoteVersion: self.remoteVersion
             )
             let loaded = await core.state.enabled
             self.enabledState.withLock { if $0 == nil { $0 = loaded } }
@@ -251,6 +252,23 @@ public final class Herald: Sendable {
     /// to start again with a new device id.
     public func wipeData() {
         if send({ core in core.wipeData() }) { enabledState.withLock { $0 = false } }
+    }
+
+    /// The version of the remote SDK settings in use (cached or fetched), for debugging; nil before any was fetched.
+    public var remoteConfigVersion: String? { remoteVersion.withLock { $0 } }
+
+    // MARK: - Consent
+
+    /// Records the lawful basis your app collects data under, for your compliance records. Persisted and sent in each
+    /// batch until `clearConsent()`. It doesn't change what the SDK collects. `documentId` and `documentVersion`
+    /// (your policy or terms) are at most 100 characters.
+    public func setConsent(basis: ConsentBasis, documentId: String? = nil, documentVersion: String? = nil) {
+        send { core in core.setConsent(basis: basis, documentId: documentId, documentVersion: documentVersion) }
+    }
+
+    /// Stops sending the consent record.
+    public func clearConsent() {
+        send { core in core.clearConsent() }
     }
 
     // MARK: - Push
