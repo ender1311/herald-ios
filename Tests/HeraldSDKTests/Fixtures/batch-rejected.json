@@ -2,6 +2,7 @@
   "data": {
     "accepted": 1,
     "duplicates": 0,
+    "heraldId": "7K3M-9QXA",
     "rejected": [
       { "id": "e2", "index": 1, "reason": "too_old", "detail": "timestamp is more than 30 days old" }
     ]

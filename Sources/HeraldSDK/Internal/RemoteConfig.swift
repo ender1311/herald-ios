@@ -27,6 +27,7 @@ struct RemoteConfig: Equatable {
             c.deviceDataCollection = v
         }
         if let v = settings["trackLifecycleEvents"]?.boolValue { c.trackLifecycleEvents = v }
+        if let v = settings["trackExternalPushes"]?.boolValue { c.trackExternalPushes = v }
         if let v = settings["trackDeepLinks"]?.boolValue { c.trackDeepLinks = v }
         return c
     }

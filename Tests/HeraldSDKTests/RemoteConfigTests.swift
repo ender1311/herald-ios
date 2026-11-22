@@ -25,13 +25,14 @@ final class RemoteConfigTests: XCTestCase {
 
     func testRemoteValuesOverrideAndAbsentOnesFallBack() async throws {
         let harness = CoreHarness()
-        harness.transport.enqueueConfig(FakeResponse(status: 200, body: configBody("v2", #"{"foregroundSessionTimeoutSeconds":120,"trackDeepLinks":false,"flushIntervalSeconds":"x"}"#)))
+        harness.transport.enqueueConfig(FakeResponse(status: 200, body: configBody("v2", #"{"foregroundSessionTimeoutSeconds":120,"trackDeepLinks":false,"trackExternalPushes":false,"flushIntervalSeconds":"x"}"#)))
         let core = harness.makeCore { $0.flushInterval = 15 }
         await core.start()
         await core.drain()
         let c = await core.configuration
         XCTAssertEqual(c.foregroundSessionTimeout, 120)
         XCTAssertFalse(c.trackDeepLinks)
+        XCTAssertFalse(c.trackExternalPushes)
         XCTAssertEqual(c.flushInterval, 15, "a mistyped value keeps the app's")
         XCTAssertEqual(c.backgroundSessionTimeout, 30 * 60)
         XCTAssertEqual(core.remoteVersion.withLock { $0 }, "v2")
