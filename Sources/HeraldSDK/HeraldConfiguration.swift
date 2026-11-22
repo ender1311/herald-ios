@@ -43,6 +43,9 @@ public struct HeraldConfiguration: Sendable {
     /// iOS only: sends MetricKit crash and hang diagnostics to Herald, with no user or device id.
     /// Nothing is sent while the SDK is disabled.
     public var crashReports: Bool = false
+    /// Records a push your app sent itself (not from Herald) as `$external_push` when it is tapped, so Herald's
+    /// push limit counts it. Silent pushes and local notifications are never recorded.
+    public var trackExternalPushes: Bool = true
 
     public init(appKey: String, endpoint: URL) {
         self.appKey = appKey

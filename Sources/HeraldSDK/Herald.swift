@@ -15,7 +15,7 @@ import UserNotifications
 /// the host app: invalid input is logged and skipped.
 public final class Herald: Sendable {
     public static let shared = Herald()
-    public static let sdkVersion = "0.5.0"
+    public static let sdkVersion = "0.6.0"
     /// Calls kept before `configure` runs (and while the core is busy); newer calls are dropped beyond it.
     static let maxBufferedCalls = 1_000
 
@@ -128,6 +128,13 @@ public final class Herald: Sendable {
 
     public func track(_ event: String, properties: [String: HeraldValue] = [:]) {
         send { core in core.track(event, properties: properties) }
+    }
+
+    /// Reports a push your app sent itself (from its own backend, Firebase or another service) so Herald's push
+    /// limit counts it. Pass the same `messageId` your backend reports to `POST /api/v1/events`, so the push
+    /// counts once. Never include the push's title or body.
+    public func trackExternalPush(messageId: String? = nil, category: ExternalPushCategory = .other, source: String? = nil) {
+        send { core in core.trackExternalPush(messageId: messageId, category: category, source: source, automatic: false) }
     }
 
     public func screen(_ name: String, properties: [String: HeraldValue] = [:]) {
@@ -272,11 +279,13 @@ public final class Herald: Sendable {
     /// Forward from `userNotificationCenter(_:didReceive:withCompletionHandler:)`. Logs the open, button
     /// (a button tap logs the open too) or dismissal, evaluates `push_open` in-app triggers and opens the
     /// push's deep link (a button's own `deeplink` when it has one). Callable from any isolation.
-    /// Returns false when the notification did not come from Herald.
+    /// Returns false when the notification did not come from Herald; a tapped push your app sent itself is then
+    /// recorded as `$external_push` (with `trackExternalPushes` on).
     @discardableResult
     public nonisolated func handleNotificationResponse(_ response: UNNotificationResponse) -> Bool {
         handleNotificationResponse(
-            userInfo: response.notification.request.content.userInfo, actionIdentifier: response.actionIdentifier
+            userInfo: response.notification.request.content.userInfo, actionIdentifier: response.actionIdentifier,
+            requestIdentifier: response.notification.request.identifier
         )
     }
 
@@ -284,7 +293,19 @@ public final class Herald: Sendable {
     /// response's `actionIdentifier`.
     @discardableResult
     public nonisolated func handleNotificationResponse(userInfo: [AnyHashable: Any], actionIdentifier: String) -> Bool {
-        guard let payload = HeraldPushPayload(userInfo: userInfo) else { return false }
+        handleNotificationResponse(userInfo: userInfo, actionIdentifier: actionIdentifier, requestIdentifier: nil)
+    }
+
+    nonisolated func handleNotificationResponse(
+        userInfo: [AnyHashable: Any], actionIdentifier: String, requestIdentifier: String?
+    ) -> Bool {
+        guard let payload = HeraldPushPayload(userInfo: userInfo) else {
+            if actionIdentifier != UNNotificationDismissActionIdentifier,
+                let push = ExternalPush.capture(userInfo: userInfo, requestIdentifier: requestIdentifier) {
+                send { core in core.trackExternalPush(messageId: push.messageId, category: push.category, source: nil, automatic: true) }
+            }
+            return false
+        }
         let action: String
         let buttonId: String?
         switch actionIdentifier {

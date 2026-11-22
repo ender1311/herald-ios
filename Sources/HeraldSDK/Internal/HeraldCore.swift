@@ -212,6 +212,16 @@ actor HeraldCore {
         fire(.event(name: name, properties: properties))
     }
 
+    /// `automatic`: recorded by the SDK itself, only with `trackExternalPushes` on.
+    func trackExternalPush(messageId: String?, category: ExternalPushCategory, source: String?, automatic: Bool) {
+        if automatic && !configuration.trackExternalPushes { return }
+        guard let properties = ExternalPush.properties(messageId: messageId, category: category, source: source) else {
+            _ = rejected("trackExternalPush", ExternalPush.tooLong)
+            return
+        }
+        track(ExternalPush.eventName, properties: properties)
+    }
+
     func screen(_ name: String, properties: [String: HeraldValue]) {
         guard state.enabled else { return }
         if rejected("screen", Validation.length("name", name, max: Validation.maxName)

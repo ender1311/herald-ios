@@ -13,7 +13,7 @@ In Xcode, choose **File > Add Package Dependencies**, enter `https://github.com/
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ender1311/herald-ios", from: "0.5.0"),
+    .package(url: "https://github.com/ender1311/herald-ios", from: "0.6.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -42,6 +42,23 @@ Herald.shared.track("workout_completed", properties: ["minutes": 32])
 ```
 
 The full guide, including push setup, is at https://heraldsdk.com/docs.
+
+## Pushes your app sends
+
+Herald limits how many pushes a person gets in 24 hours, counting pushes your app sends itself. Report each one from
+your backend with the `$external_push` event (`POST /api/v1/events`), or from the app:
+
+```swift
+Herald.shared.trackExternalPush(messageId: "order-42-shipped", category: .transactional, source: "orders")
+```
+
+With `trackExternalPushes` on (the default), the SDK also records a push that isn't from Herald when it's tapped and
+forwarded to `handleNotificationResponse`. Silent pushes and local notifications are never recorded. Put the id your
+backend reports in the payload key `herald_external_id` (else the notification's request id is used) and
+`transactional`, `marketing` or `other` in `herald_category`, so the backend's report and the SDK's count once.
+Pushes shown while the app is open but not tapped, and pushes that are never opened, count only if your backend
+reports them. The Notification Service Extension doesn't record anything. Guide:
+https://heraldsdk.com/docs/push-notifications/pushes-your-app-sends
 
 ## License
 

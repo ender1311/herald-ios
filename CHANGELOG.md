@@ -2,6 +2,13 @@
 
 Releases follow the policy on [Versioning and support](https://heraldsdk.com/docs/operations/versioning-and-support). iOS and Android share version numbers.
 
+## 0.6.0
+
+### Added
+
+- `trackExternalPush(messageId:category:source:)` reports a push your app sent itself (`$external_push`), so Herald's push limit across all sources counts it. `ExternalPushCategory` is `.transactional`, `.marketing` or `.other` (the default). Never include the push's title or body.
+- `HeraldConfiguration.trackExternalPushes` (default `true`): a tapped push that isn't from Herald, forwarded to `handleNotificationResponse`, is recorded as `$external_push`. Silent pushes and local notifications never are. The id is the payload key `herald_external_id` when present, else the notification's request id; the category is `herald_category` (`transactional`, `marketing` or `other`), else `other`. Pushes shown in the foreground without a tap, and the Notification Service Extension, record nothing.
+
 ## 0.5.0
 
 ### Added
