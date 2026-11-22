@@ -76,6 +76,21 @@ final class QueueAndFlushTests: XCTestCase {
         XCTAssertEqual(after, 0)
     }
 
+    func testEventOver32KBIsDroppedBeforeQueueingAndCounted() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.track("small", properties: [:])
+        await core.track("big", properties: ["blob": .string(String(repeating: "x", count: 33 * 1024))])
+        await core.drain()
+        let queued = await core.queuedCount
+        XCTAssertEqual(queued, 2, "session_start + small; big never queued")
+        let dropped = await core.state.dropped
+        XCTAssertEqual(dropped, 1)
+        await core.flushNow()
+        let bodies = try harness.transport.batchBodies()
+        XCTAssertEqual(bodies.first?.objectValue?["dropped"], 1)
+    }
+
     func testBackoffSchedule() {
         let full = (1...10).map { Backoff.delay(attempt: $0, random: 1) }
         XCTAssertEqual(full, [1, 2, 4, 8, 16, 32, 64, 128, 256, 300])

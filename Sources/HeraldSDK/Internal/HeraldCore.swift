@@ -17,6 +17,8 @@ actor HeraldCore {
     static let sdkName = "herald-ios"
     static let maxBatchEvents = 100
     static let maxBatchBytes = 512 * 1024
+    /// Herald rejects a single event over 32 KB of JSON, so a bigger one is dropped here and counted in `dropped`.
+    static let maxEventBytes = 32 * 1024
     static let anonymousKey = "anonymous"
     static let maxRecentPushOpens = 50
 
@@ -559,6 +561,12 @@ actor HeraldCore {
         event["type"] = .string(type)
         event["timestamp"] = .string(WireDate.format(date ?? now()))
         if let id = sessionId ?? state.session?.id { event["sessionId"] = .string(id) }
+        if let data = try? JSONEncoder().encode(HeraldValue.object(event)), data.count > Self.maxEventBytes {
+            Log.debug("Dropping a \(type) event larger than \(Self.maxEventBytes / 1024) KB")
+            state.dropped += 1
+            persist()
+            return
+        }
         let dropped = queue.append(QueuedEvent(userId: state.userId, event: event))
         if dropped > 0 {
             state.dropped += dropped
