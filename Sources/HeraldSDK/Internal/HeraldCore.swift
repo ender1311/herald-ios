@@ -291,7 +291,14 @@ actor HeraldCore {
         if rejected("track", Validation.length("name", name, max: Validation.maxName)
             ?? Validation.properties("properties", properties)) { return }
         var fields: [String: HeraldValue] = ["name": .string(name), "properties": .object(properties)]
-        if let schemaVersion { fields["schemaVersion"] = .string(schemaVersion) }
+        if let schemaVersion {
+            // SchemaVer MODEL-REVISION-ADDITION; a malformed one is dropped, not the event.
+            if schemaVersion.range(of: #"^[1-9][0-9]*-(0|[1-9][0-9]*)-(0|[1-9][0-9]*)$"#, options: .regularExpression) != nil {
+                fields["schemaVersion"] = .string(schemaVersion)
+            } else {
+                Log.debug("Ignoring schemaVersion \"\(schemaVersion)\" on \(name): expected a version such as 1-0-0")
+            }
+        }
         record("track", fields)
         fire(.event(name: name, properties: properties))
     }

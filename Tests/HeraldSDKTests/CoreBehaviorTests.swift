@@ -11,11 +11,13 @@ final class CoreBehaviorTests: XCTestCase {
         let core = harness.makeCore()
         await core.track("signup", properties: ["plan": "pro"], schemaVersion: "1-0-0")
         await core.track("signup", properties: [:])
+        await core.track("signup", properties: [:], schemaVersion: "v1")
         await core.drain()
         await core.flushNow()
         let events = try XCTUnwrap(harness.transport.batchBodies().first?.objectValue?["events"]?.arrayValue)
         let tracks = events.compactMap(\.objectValue).filter { $0["type"] == "track" }
-        XCTAssertEqual(tracks.map { $0["schemaVersion"] }, [.string("1-0-0"), nil])
+        // A malformed version is dropped, the event kept.
+        XCTAssertEqual(tracks.map { $0["schemaVersion"] }, [.string("1-0-0"), nil, nil])
     }
 
     func testETag304KeepsCache() async throws {
