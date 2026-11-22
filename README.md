@@ -56,8 +56,8 @@ With `trackExternalPushes` on (the default), the SDK also records a push that is
 forwarded to `handleNotificationResponse`. Silent pushes and local notifications are never recorded. Put the id your
 backend reports in the payload key `herald_external_id` (else the notification's request id is used) and
 `transactional`, `marketing` or `other` in `herald_category`, so the backend's report and the SDK's count once.
-Pushes shown while the app is open but not tapped, and pushes that are never opened, count only if your backend
-reports them. The Notification Service Extension doesn't record anything. Guide:
+The SDKs also record some of these pushes on their own: on iOS when someone taps one, and on Android when one
+arrives. To count every push, report them from your backend. The Notification Service Extension doesn't record anything. Guide:
 https://heraldsdk.com/docs/push-notifications/pushes-your-app-sends
 
 ## License
