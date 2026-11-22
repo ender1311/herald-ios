@@ -6,6 +6,18 @@ final class CoreBehaviorTests: XCTestCase {
         FakeResponse(status: 200, headers: etag.map { ["ETag": $0] } ?? [:], body: try fixtureData("messages"))
     }
 
+    func testTrackSendsSchemaVersionOnlyWhenGiven() async throws {
+        let harness = CoreHarness()
+        let core = harness.makeCore()
+        await core.track("signup", properties: ["plan": "pro"], schemaVersion: "1-0-0")
+        await core.track("signup", properties: [:])
+        await core.drain()
+        await core.flushNow()
+        let events = try XCTUnwrap(harness.transport.batchBodies().first?.objectValue?["events"]?.arrayValue)
+        let tracks = events.compactMap(\.objectValue).filter { $0["type"] == "track" }
+        XCTAssertEqual(tracks.map { $0["schemaVersion"] }, [.string("1-0-0"), nil])
+    }
+
     func testETag304KeepsCache() async throws {
         let harness = CoreHarness()
         let core = harness.makeCore()

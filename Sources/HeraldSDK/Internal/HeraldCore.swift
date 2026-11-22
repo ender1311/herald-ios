@@ -286,11 +286,13 @@ actor HeraldCore {
 
     // MARK: - Events
 
-    func track(_ name: String, properties: [String: HeraldValue]) {
+    func track(_ name: String, properties: [String: HeraldValue], schemaVersion: String? = nil) {
         guard state.enabled else { return }
         if rejected("track", Validation.length("name", name, max: Validation.maxName)
             ?? Validation.properties("properties", properties)) { return }
-        record("track", ["name": .string(name), "properties": .object(properties)])
+        var fields: [String: HeraldValue] = ["name": .string(name), "properties": .object(properties)]
+        if let schemaVersion { fields["schemaVersion"] = .string(schemaVersion) }
+        record("track", fields)
         fire(.event(name: name, properties: properties))
     }
 

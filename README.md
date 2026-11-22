@@ -37,6 +37,8 @@ Herald.useDefaultInAppUI()
 Herald.shared.identify(userId: "user-123", traits: ["plan": "free"])
 Herald.shared.setUserToken(userTokenFromYourBackend)
 Herald.shared.track("workout_completed", properties: ["minutes": 32])
+// From 0.6.0, pin an event schema version (Settings, Event schemas in the console); nil checks against the latest.
+Herald.shared.track("signup", properties: ["plan": "pro"], schemaVersion: "1-0-0")
 
 // In a SwiftUI view: ContentCardFeed()
 ```

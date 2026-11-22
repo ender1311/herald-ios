@@ -135,8 +135,9 @@ public final class Herald: Sendable {
 
     // MARK: - Events and attributes
 
-    public func track(_ event: String, properties: [String: HeraldValue] = [:]) {
-        send { core in core.track(event, properties: properties) }
+    /// `schemaVersion` names the event schema version to check the event against (e.g. "1-0-0"); nil means the latest.
+    public func track(_ event: String, properties: [String: HeraldValue] = [:], schemaVersion: String? = nil) {
+        send { core in core.track(event, properties: properties, schemaVersion: schemaVersion) }
     }
 
     /// Reports a push your app sent itself (from its own backend, Firebase or another service) so Herald's push
