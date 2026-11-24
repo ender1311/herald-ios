@@ -11,6 +11,27 @@ enum VideoAutoplay {
     }
 }
 
+/// Decides when a video's `video_play` and `video_complete` go out: one of each per play. A play starts
+/// on a tap, an autoplay start, or a replay from the controls after the end; it completes when an item
+/// the view created reaches its end. A loop or a resume after pausing is not a new play.
+struct VideoPlayEvents {
+    private(set) var playing = false
+
+    /// True when this start begins a new play (log `video_play`).
+    mutating func started() -> Bool {
+        guard !playing else { return false }
+        playing = true
+        return true
+    }
+
+    /// True when the end belongs to this view's play in progress (log `video_complete`).
+    mutating func ended(ownItem: Bool) -> Bool {
+        guard ownItem, playing else { return false }
+        playing = false
+        return true
+    }
+}
+
 #if os(iOS)
 import AVKit
 import SwiftUI
@@ -22,9 +43,9 @@ extension EnvironmentValues {
 }
 
 /// A video in a card or in-app message: the poster with a centered play button; a tap plays it inline
-/// with sound and the standard controls. With `autoplay`, it plays muted and looped while at least half
-/// visible (paused otherwise, and never under Reduce Motion). `onPlay` runs when playback first starts
-/// and `onComplete` when it first reaches the end.
+/// with sound and the standard controls, pausing on the last frame at the end (replay from the controls).
+/// With `autoplay`, it plays muted and looped while at least half visible (paused otherwise, and never
+/// under Reduce Motion). `onPlay` and `onComplete` run once per play (see `VideoPlayEvents`).
 struct HeraldVideoView: View {
     let url: URL
     let posterUrl: URL?
@@ -35,11 +56,12 @@ struct HeraldVideoView: View {
 
     @Environment(\.heraldVisibleFraction) private var visibleFraction
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var player: AVQueuePlayer?
+    @State private var player: AVPlayer?
+    /// The item a tap created; the looper keeps its own replicas.
+    @State private var tappedItem: AVPlayerItem?
     @State private var looper: AVPlayerLooper?
     @State private var tapped = false
-    @State private var played = false
-    @State private var completed = false
+    @State private var events = VideoPlayEvents()
 
     var body: some View {
         let shouldAutoplay = VideoAutoplay.shouldPlay(visibleFraction: visibleFraction, autoplay: autoplay, reduceMotion: reduceMotion)
@@ -47,10 +69,15 @@ struct HeraldVideoView: View {
             if let player {
                 VideoPlayer(player: player)
                     .aspectRatio(aspectRatio, contentMode: .fit)
-                    .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
-                        guard let item = note.object as? AVPlayerItem, item === player.currentItem, !completed else { return }
-                        completed = true
-                        onComplete()
+                    .onReceive(
+                        NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime).receive(on: DispatchQueue.main)
+                    ) { note in
+                        guard let item = note.object as? AVPlayerItem else { return }
+                        if events.ended(ownItem: isOwn(item)) { onComplete() }
+                    }
+                    .onReceive(player.publisher(for: \.timeControlStatus).receive(on: DispatchQueue.main)) { status in
+                        // A replay from the controls after the end starts a new play.
+                        if status == .playing { started() }
                     }
             } else {
                 HeraldImage(url: posterUrl, aspectRatio: aspectRatio)
@@ -71,11 +98,17 @@ struct HeraldVideoView: View {
         .onDisappear { player?.pause() }
     }
 
+    private func isOwn(_ item: AVPlayerItem) -> Bool {
+        item === tappedItem || (looper?.loopingPlayerItems.contains { $0 === item } ?? false)
+    }
+
+    /// The poster's play button: a plain player that pauses on the last frame, so it can be replayed.
     private func playWithSound() {
         tapped = true
-        let player = self.player ?? AVQueuePlayer(url: url)
-        looper = nil
-        player.isMuted = false
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
+        player.actionAtItemEnd = .pause
+        tappedItem = item
         self.player = player
         player.play()
         started()
@@ -99,9 +132,7 @@ struct HeraldVideoView: View {
     }
 
     private func started() {
-        guard !played else { return }
-        played = true
-        onPlay()
+        if events.started() { onPlay() }
     }
 }
 #endif
