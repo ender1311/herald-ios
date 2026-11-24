@@ -125,10 +125,13 @@ private struct FeedRow<Content: View>: View {
     @ViewBuilder let content: () -> Content
     @State private var dragX: CGFloat = 0
     @State private var width: CGFloat = 0
+    /// Kept only for a card with an autoplay video, which plays while at least half visible.
+    @State private var visibleFraction: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let row = content()
+            .environment(\.heraldVisibleFraction, visibleFraction)
             .background(GeometryReader { geometry in
                 let frame = geometry.frame(in: .named(space))
                 Color.clear
@@ -148,8 +151,12 @@ private struct FeedRow<Content: View>: View {
     private func measure(_ frame: CGRect) {
         width = frame.width
         let visible = frame.intersection(CGRect(x: frame.minX, y: 0, width: frame.width, height: viewportHeight))
-        if ContentCardFeedDefaults.isImpression(visibleHeight: visible.isNull ? 0 : visible.height, fullHeight: frame.height) {
+        let visibleHeight = visible.isNull ? 0 : visible.height
+        if ContentCardFeedDefaults.isImpression(visibleHeight: visibleHeight, fullHeight: frame.height) {
             onVisible()
+        }
+        if card.videoAutoplay, card.videoUrl != nil {
+            visibleFraction = frame.height > 0 ? visibleHeight / frame.height : 0
         }
     }
 

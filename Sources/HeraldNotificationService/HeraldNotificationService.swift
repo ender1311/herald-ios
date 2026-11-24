@@ -1,14 +1,17 @@
 import Foundation
+import UniformTypeIdentifiers
 import UserNotifications
 
-/// Rich push for a Notification Service Extension: adds the action buttons and attaches the image a
-/// Herald push carries.
+/// Rich push for a Notification Service Extension: adds the action buttons and attaches the video or
+/// image a Herald push carries.
 ///
 /// Herald's APNs payload (`src/lib/esp/providers/apns.ts`) sets `aps.mutable-content: 1` and an
-/// `image_url` key when the push has an image (`image` is read too, as on Android). Optional
+/// `image_url` key when the push has an image (`image` is read too, as on Android). A video push also
+/// carries `video_url`, with `image_url` as its poster: the video is tried first, then the poster, then
+/// the push shows as text, all within `HeraldRichPush.mediaBudget`. Optional
 /// `herald_actions` (up to 3 buttons, `[{"id","title","deeplink"?}]`, the same key the Android SDK
 /// reads) become a notification category registered on the fly, unless the payload already names one
-/// of the app's own categories in `aps.category` (an id starting with `herald.` is Herald's and is replaced). This module depends on Foundation and UserNotifications only, so it links into an
+/// of the app's own categories in `aps.category` (an id starting with `herald.` is Herald's and is replaced). This module depends on Foundation, UniformTypeIdentifiers and UserNotifications only, so it links into an
 /// app extension (HeraldSDK does not: it uses `UIApplication`).
 ///
 /// Subclass it as the extension's principal class:
@@ -18,7 +21,7 @@ import UserNotifications
 /// ```
 /// or call `HeraldRichPush.prepare(_:timeout:)` from your own `UNNotificationServiceExtension`.
 open class HeraldNotificationService: UNNotificationServiceExtension, @unchecked Sendable {
-    /// How long to wait for the image before showing the push without it.
+    /// How long to wait for the image before showing the push without it (never past `mediaBudget`).
     open var imageTimeout: TimeInterval { HeraldRichPush.defaultTimeout }
 
     private var contentHandler: ((UNNotificationContent) -> Void)?
@@ -29,6 +32,7 @@ open class HeraldNotificationService: UNNotificationServiceExtension, @unchecked
     override open func didReceive(
         _ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
+        let start = Date()
         lock.withLock {
             self.contentHandler = contentHandler
             best = request.content
@@ -39,7 +43,8 @@ open class HeraldNotificationService: UNNotificationServiceExtension, @unchecked
         Task {
             nonisolated(unsafe) let withActions = await HeraldRichPush.applyActions(to: content)
             self.lock.withLock { self.best = withActions }
-            let result = await HeraldRichPush.attachImage(to: withActions, timeout: timeout)
+            let budget = HeraldRichPush.mediaBudget - Date().timeIntervalSince(start)
+            let result = await HeraldRichPush.attachMedia(to: withActions, timeout: timeout, budget: budget)
             self.deliver(result)
         }
     }
@@ -65,6 +70,14 @@ public enum HeraldRichPush {
     public static let defaultTimeout: TimeInterval = 20
     /// Larger downloads are skipped (the system limit for an image attachment is 10 MB).
     static let maxBytes = 10 * 1024 * 1024
+    /// The payload key with the video URL (`image_url` is then its poster).
+    public static let videoKey = "video_url"
+    /// Herald keeps video attachments small: the extension has little time and memory.
+    static let maxVideoBytes = 10 * 1024 * 1024
+    /// Everything (video, then poster) finishes within this, under the system's roughly 30 s.
+    public static let mediaBudget: TimeInterval = 25
+    /// The share of the budget the video may use, so a slow video still leaves time for the poster.
+    static let videoShare = 0.6
 
     /// The payload key with up to 3 action buttons.
     public static let actionsKey = "herald_actions"
@@ -73,11 +86,104 @@ public enum HeraldRichPush {
     /// How many `herald.actions.*` categories to keep registered (newest first).
     static let maxActionCategories = 10
 
-    /// Adds the push's action buttons, then its image. Returns `content` unchanged when it has neither.
+    /// Adds the push's action buttons, then its video or image. Returns `content` unchanged when it has neither.
     public static func prepare(
         _ content: UNNotificationContent, timeout: TimeInterval = defaultTimeout, session: URLSession = .shared
     ) async -> UNNotificationContent {
-        await attachImage(to: await applyActions(to: content), timeout: timeout, session: session)
+        await attachMedia(to: await applyActions(to: content), timeout: timeout, session: session)
+    }
+
+    /// Attaches the push's `video_url` as a movie (https, `video/mp4` or `video/quicktime`, at most 10 MB,
+    /// within `videoShare` of `budget`); otherwise, or when that fails, its image as `attachImage` does,
+    /// with whatever is left of `budget` (at most `timeout`). Returns `content` unchanged when both fail.
+    public static func attachMedia(
+        to content: UNNotificationContent, timeout: TimeInterval = defaultTimeout, budget: TimeInterval = mediaBudget,
+        session: URLSession = .shared
+    ) async -> UNNotificationContent {
+        let start = Date()
+        if let url = videoURL(in: content.userInfo),
+            let attachment = await downloadVideo(from: url, timeout: max(budget, 0) * videoShare, session: session),
+            let mutable = content.mutableCopy() as? UNMutableNotificationContent
+        {
+            mutable.attachments = [attachment]
+            return mutable
+        }
+        let remaining = budget - Date().timeIntervalSince(start)
+        guard remaining > 0 else { return content }
+        return await attachImage(to: content, timeout: min(timeout, remaining), session: session)
+    }
+
+    /// `video_url` when it is an https URL.
+    public static func videoURL(in userInfo: [AnyHashable: Any]) -> URL? {
+        guard let text = userInfo[videoKey] as? String, let url = URL(string: text), url.scheme?.lowercased() == "https"
+        else { return nil }
+        return url
+    }
+
+    /// Streams the video to a file, giving up as soon as the response is not a 2xx `video/mp4` or
+    /// `video/quicktime`, its Content-Length is over `maxVideoBytes`, or the bytes received pass it.
+    static func downloadVideo(from url: URL, timeout: TimeInterval, session: URLSession) async -> UNNotificationAttachment? {
+        guard timeout > 0 else { return nil }
+        var mutableRequest = URLRequest(url: url)
+        mutableRequest.timeoutInterval = timeout
+        let request = mutableRequest
+        let fileManager = FileManager.default
+        let dir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+            let type = try await withTimeout(timeout) { () -> UTType? in
+                let (bytes, response) = try await session.bytes(for: request)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                    http.expectedContentLength <= Int64(maxVideoBytes), let type = movieType(mimeType: http.mimeType)
+                else {
+                    bytes.task.cancel()
+                    return nil
+                }
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let target = dir.appendingPathComponent("video.\(type.preferredFilenameExtension ?? "mp4")")
+                guard FileManager.default.createFile(atPath: target.path, contents: nil) else { return nil }
+                let handle = try FileHandle(forWritingTo: target)
+                defer { try? handle.close() }
+                var buffer = Data()
+                var total = 0
+                for try await byte in bytes {
+                    buffer.append(byte)
+                    if buffer.count >= 64 * 1024 {
+                        total += buffer.count
+                        guard total <= maxVideoBytes else {
+                            bytes.task.cancel()
+                            return nil
+                        }
+                        try handle.write(contentsOf: buffer)
+                        buffer.removeAll(keepingCapacity: true)
+                    }
+                }
+                total += buffer.count
+                guard total > 0, total <= maxVideoBytes else { return nil }
+                try handle.write(contentsOf: buffer)
+                return type
+            }
+            guard let type else {
+                try? fileManager.removeItem(at: dir)
+                return nil
+            }
+            let target = dir.appendingPathComponent("video.\(type.preferredFilenameExtension ?? "mp4")")
+            // The system moves the file into its own store on success.
+            return try UNNotificationAttachment(
+                identifier: "herald-video", url: target, options: [UNNotificationAttachmentOptionsTypeHintKey: type.identifier]
+            )
+        } catch {
+            try? fileManager.removeItem(at: dir)
+            return nil
+        }
+    }
+
+    /// Only the two movie types Herald sends; no guessing from the URL.
+    static func movieType(mimeType: String?) -> UTType? {
+        switch mimeType?.lowercased() {
+        case "video/mp4": return .mpeg4Movie
+        case "video/quicktime": return .quickTimeMovie
+        default: return nil
+        }
     }
 
     /// Registers a category for the push's `herald_actions` and sets it on the content. Unchanged when

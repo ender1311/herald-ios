@@ -51,10 +51,17 @@ public struct InAppMessage: Sendable, Hashable, Identifiable {
         public let slideFrom: SlideFrom?
         /// Auto-dismiss delay in seconds; nil keeps the message until the user acts.
         public let dismissAfterSeconds: Double?
+        /// A video to play in place of the image; `imageUrl` then holds its poster.
+        public let videoUrl: URL?
+        /// The video's poster (the same as `imageUrl`).
+        public let videoPosterUrl: URL?
+        /// Who made the stock photo or video, for apps that show a credit.
+        public let credit: MediaCredit?
 
         public init(
             header: String? = nil, body: String? = nil, imageUrl: URL? = nil, buttons: [Button] = [],
-            html: String? = nil, slideFrom: SlideFrom? = nil, dismissAfterSeconds: Double? = nil
+            html: String? = nil, slideFrom: SlideFrom? = nil, dismissAfterSeconds: Double? = nil,
+            videoUrl: URL? = nil, videoPosterUrl: URL? = nil, credit: MediaCredit? = nil
         ) {
             self.header = header
             self.body = body
@@ -63,6 +70,9 @@ public struct InAppMessage: Sendable, Hashable, Identifiable {
             self.html = html
             self.slideFrom = slideFrom
             self.dismissAfterSeconds = dismissAfterSeconds
+            self.videoUrl = videoUrl
+            self.videoPosterUrl = videoPosterUrl
+            self.credit = credit
         }
     }
 
@@ -265,7 +275,7 @@ extension InAppReEligibility: Decodable {
 
 extension InAppMessage.Content: Decodable {
     private enum CodingKeys: String, CodingKey {
-        case header, body, imageUrl, buttons, html, slideFrom, dismissAfterSeconds
+        case header, body, imageUrl, buttons, html, slideFrom, dismissAfterSeconds, videoUrl, videoPosterUrl, credit
     }
 
     public init(from decoder: Decoder) throws {
@@ -278,7 +288,10 @@ extension InAppMessage.Content: Decodable {
             buttons: buttons,
             html: c.lenient(String.self, .html),
             slideFrom: c.lenient(String.self, .slideFrom).flatMap(InAppMessage.SlideFrom.init(rawValue:)),
-            dismissAfterSeconds: c.lenient(Double.self, .dismissAfterSeconds)
+            dismissAfterSeconds: c.lenient(Double.self, .dismissAfterSeconds),
+            videoUrl: c.lenientURL(.videoUrl),
+            videoPosterUrl: c.lenientURL(.videoPosterUrl),
+            credit: c.lenient(MediaCredit.self, .credit)
         )
     }
 }

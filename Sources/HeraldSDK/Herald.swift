@@ -435,6 +435,16 @@ public final class Herald: Sendable {
         send { core in core.logCardDismissal(card) }
     }
 
+    /// Only for custom displays (`HeraldUI` logs these): the card's video started playing.
+    public func logVideoPlay(_ card: ContentCard) {
+        send { core in core.logVideo(messageId: card.id, kind: "content_card", decisionId: card.decisionId, completed: false) }
+    }
+
+    /// Only for custom displays (`HeraldUI` logs these): the card's video played to the end.
+    public func logVideoComplete(_ card: ContentCard) {
+        send { core in core.logVideo(messageId: card.id, kind: "content_card", decisionId: card.decisionId, completed: true) }
+    }
+
     // MARK: - In-app messages
 
     /// Decides whether each triggered message shows now, later or never. Held weakly.
@@ -477,6 +487,16 @@ public final class Herald: Sendable {
 
     public func logDismissal(_ message: InAppMessage) {
         send { core in core.logMessageDismissal(message) }
+    }
+
+    /// Only for custom displays (`HeraldUI` logs these): the message's video started playing.
+    public func logVideoPlay(_ message: InAppMessage) {
+        send { core in core.logVideo(messageId: message.id, kind: "in_app", decisionId: message.decisionId, completed: false) }
+    }
+
+    /// Only for custom displays (`HeraldUI` logs these): the message's video played to the end.
+    public func logVideoComplete(_ message: InAppMessage) {
+        send { core in core.logVideo(messageId: message.id, kind: "in_app", decisionId: message.decisionId, completed: true) }
     }
 
     /// Debug and preview only: loads the cards and in-app messages of a `GET /api/v1/sdk/messages`

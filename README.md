@@ -1,6 +1,6 @@
 # Herald iOS SDK
 
-The Herald iOS SDK connects an iOS app to Herald. It identifies users, records events and attributes, registers the device for push through APNs, and shows content cards and in-app messages. `HeraldSDK` holds the core calls, `HeraldUI` adds the default SwiftUI views, and `HeraldNotificationService` adds images and action buttons to push notifications from a Notification Service Extension.
+The Herald iOS SDK connects an iOS app to Herald. It identifies users, records events and attributes, registers the device for push through APNs, and shows content cards and in-app messages. `HeraldSDK` holds the core calls, `HeraldUI` adds the default SwiftUI views, and `HeraldNotificationService` adds images, videos and action buttons to push notifications from a Notification Service Extension.
 
 ## Requirements
 
@@ -50,6 +50,18 @@ From 0.6.0 the SDK sends lifecycle events on its own (`$app_installed`, `$app_up
 The SDK also fetches remote settings from the console (Settings, SDK settings) at launch and at most hourly on foreground, and applies the cached ones at launch: they override your configuration, and turning off "Collect events" there stops collection and clears the queue until it is turned back on (push tokens and subscription changes wait and go out then). `Herald.shared.remoteConfigVersion` shows the version in use. `setConsent(basis:documentId:documentVersion:)` / `clearConsent()` record the lawful basis your app uses, sent with each batch for your compliance records; it doesn't change what is collected.
 
 The full guide, including push setup, is at https://heraldsdk.com/docs.
+
+## Video
+
+A push with a video carries `video_url` beside its poster in `image_url`. `HeraldNotificationService` attaches the
+video when it's https, MP4 or QuickTime and at most 10 MB; otherwise, or when the download fails or is slow, it
+attaches the poster, then shows the text. The push is always delivered, within 25 seconds.
+
+In-app messages and content cards with `videoUrl` show the poster with a play button ("Play video" in VoiceOver); a
+tap plays the video inline with sound. Cards with `videoAutoplay` play muted and looped in `ContentCardFeed` while at
+least half visible, and not at all with Reduce Motion on. `HeraldUI` sends `video_play` and `video_complete`
+interactions; a custom display calls `Herald.shared.logVideoPlay(_:)` and `logVideoComplete(_:)`. `credit` holds the
+photographer's name and links for apps that show a credit.
 
 ## Support ID
 

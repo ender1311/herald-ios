@@ -76,7 +76,9 @@ public struct ModalMessageView: View {
     public var body: some View {
         let colors = MessageColors(style: message.style, theme: theme, colorScheme: colorScheme)
         let content = VStack(spacing: 0) {
-            if let url = message.content.imageUrl {
+            if let video = message.content.videoUrl {
+                MessageVideo(message: message, url: video, aspectRatio: 16 / 9)
+            } else if let url = message.content.imageUrl {
                 HeraldImage(url: url, aspectRatio: 16 / 9)
             }
             VStack(spacing: theme.spacing) {
@@ -85,7 +87,7 @@ public struct ModalMessageView: View {
             }
             .padding(theme.spacing * 1.5)
             // Keeps the header below the 44 pt close button when there is no image.
-            .padding(.top, message.content.imageUrl == nil ? max(theme.spacing, 44 - theme.spacing * 0.5) : 0)
+            .padding(.top, message.content.hasMedia ? 0 : max(theme.spacing, 44 - theme.spacing * 0.5))
         }
         ZStack {
             theme.colors(for: colorScheme).scrim
@@ -127,7 +129,9 @@ public struct FullScreenMessageView: View {
             colors.background.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if let url = message.content.imageUrl {
+                    if let video = message.content.videoUrl {
+                        MessageVideo(message: message, url: video, aspectRatio: 4 / 3)
+                    } else if let url = message.content.imageUrl {
                         HeraldImage(url: url, aspectRatio: 4 / 3)
                     }
                     VStack(alignment: .leading, spacing: theme.spacing) {
@@ -135,7 +139,7 @@ public struct FullScreenMessageView: View {
                         MessageButtons(message: message, colors: colors, actions: actions)
                     }
                     .padding(theme.spacing * 1.5)
-                    .padding(.top, message.content.imageUrl == nil ? 44 : 0)
+                    .padding(.top, message.content.hasMedia ? 0 : 44)
                 }
             }
             CloseButton(tint: colors.text, actions: actions)
@@ -189,6 +193,24 @@ public struct DefaultInAppMessageView: View {
         case .html: HTMLMessageView(message: message, actions: actions)
         }
     }
+}
+
+/// A modal or full-screen message's video (no autoplay in messages), logging play and completion.
+struct MessageVideo: View {
+    let message: InAppMessage
+    let url: URL
+    let aspectRatio: CGFloat
+
+    var body: some View {
+        HeraldVideoView(
+            url: url, posterUrl: message.content.videoPosterUrl ?? message.content.imageUrl, aspectRatio: aspectRatio,
+            onPlay: { Herald.shared.logVideoPlay(message) }, onComplete: { Herald.shared.logVideoComplete(message) }
+        )
+    }
+}
+
+extension InAppMessage.Content {
+    var hasMedia: Bool { imageUrl != nil || videoUrl != nil }
 }
 
 struct MessageText: View {

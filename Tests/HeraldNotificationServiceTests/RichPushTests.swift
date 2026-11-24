@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import UserNotifications
 import XCTest
 @testable import HeraldNotificationService
@@ -8,21 +9,33 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var mimeType = "image/png"
     nonisolated(unsafe) static var body = Data()
     nonisolated(unsafe) static var delay: TimeInterval = 0
+    /// Per-URL overrides of the defaults above, for payloads with both a video and an image.
+    struct Route {
+        var status = 200
+        var mimeType = "video/mp4"
+        var body = Data()
+        var delay: TimeInterval = 0
+        var headers: [String: String] = [:]
+    }
+    nonisolated(unsafe) static var routes: [String: Route] = [:]
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        let route = Self.routes[request.url!.absoluteString]
+            ?? Route(status: Self.status, mimeType: Self.mimeType, body: Self.body, delay: Self.delay)
         let respond = { [self] in
             let response = HTTPURLResponse(
-                url: request.url!, statusCode: Self.status, httpVersion: nil, headerFields: ["Content-Type": Self.mimeType]
+                url: request.url!, statusCode: route.status, httpVersion: nil,
+                headerFields: ["Content-Type": route.mimeType].merging(route.headers) { $1 }
             )!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: Self.body)
+            client?.urlProtocol(self, didLoad: route.body)
             client?.urlProtocolDidFinishLoading(self)
         }
-        if Self.delay > 0 {
-            DispatchQueue.global().asyncAfter(deadline: .now() + Self.delay, execute: respond)
+        if route.delay > 0 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + route.delay, execute: respond)
         } else {
             respond()
         }
@@ -53,6 +66,7 @@ final class RichPushTests: XCTestCase {
         StubProtocol.mimeType = "image/png"
         StubProtocol.body = png
         StubProtocol.delay = 0
+        StubProtocol.routes = [:]
     }
 
     func testImageURLRequiresHttps() {
@@ -100,6 +114,105 @@ final class RichPushTests: XCTestCase {
         StubProtocol.mimeType = "text/html"
         let result = await HeraldRichPush.attachImage(to: content(["image_url": "https://x.test/page"]), timeout: 5, session: session)
         XCTAssertTrue(result.attachments.isEmpty)
+    }
+
+    // MARK: - Video (Review Focus 2: a video that can't download never costs the push its poster or its text)
+
+    private let videoURL = "https://videos.test/clip.mp4"
+    private let posterURL = "https://images.test/poster.png"
+    private var mp4: Data { Data(base64Encoded: tinyMP4Base64)! }
+
+    private func videoPush() -> UNNotificationContent {
+        content(["video_url": videoURL, "image_url": posterURL])
+    }
+
+    func testVideoURLRequiresHttps() {
+        XCTAssertEqual(HeraldRichPush.videoURL(in: ["video_url": "https://v.test/a.mp4"]), URL(string: "https://v.test/a.mp4"))
+        XCTAssertNil(HeraldRichPush.videoURL(in: ["video_url": "http://v.test/a.mp4"]))
+        XCTAssertNil(HeraldRichPush.videoURL(in: ["image_url": "https://v.test/a.mp4"]))
+    }
+
+    func testPrefersVideoUnderTheCap() async {
+        StubProtocol.routes[videoURL] = .init(mimeType: "video/mp4", body: mp4)
+        let result = await HeraldRichPush.attachMedia(to: videoPush(), budget: 5, session: session)
+        XCTAssertEqual(result.attachments.map(\.identifier), ["herald-video"])
+        XCTAssertEqual(result.attachments.first?.type, UTType.mpeg4Movie.identifier)
+        XCTAssertEqual(result.title, "Hi")
+    }
+
+    func testQuickTimeVideoGetsTheMovieHint() async {
+        StubProtocol.routes[videoURL] = .init(mimeType: "video/quicktime", body: mp4)
+        let result = await HeraldRichPush.attachMedia(to: videoPush(), budget: 5, session: session)
+        XCTAssertEqual(result.attachments.map(\.identifier), ["herald-video"])
+        XCTAssertEqual(result.attachments.first?.type, UTType.quickTimeMovie.identifier)
+    }
+
+    func testVideo404FallsBackToPoster() async {
+        StubProtocol.routes[videoURL] = .init(status: 404, mimeType: "text/html")
+        let result = await HeraldRichPush.attachMedia(to: videoPush(), budget: 5, session: session)
+        XCTAssertEqual(result.attachments.map(\.identifier), ["herald-image"])
+    }
+
+    func testTooBigVideoFallsBackToPoster() async {
+        StubProtocol.routes[videoURL] = .init(mimeType: "video/mp4", body: Data(count: HeraldRichPush.maxVideoBytes + 1))
+        var result = await HeraldRichPush.attachMedia(to: videoPush(), budget: 5, session: session)
+        XCTAssertEqual(result.attachments.map(\.identifier), ["herald-image"], "actual bytes over the cap")
+        StubProtocol.routes[videoURL] = .init(
+            mimeType: "video/mp4", body: mp4, headers: ["Content-Length": String(HeraldRichPush.maxVideoBytes + 1)]
+        )
+        result = await HeraldRichPush.attachMedia(to: videoPush(), budget: 5, session: session)
+        XCTAssertEqual(result.attachments.map(\.identifier), ["herald-image"], "Content-Length over the cap")
+    }
+
+    func testWrongMimeVideoFallsBackToPoster() async {
+        StubProtocol.routes[videoURL] = .init(mimeType: "video/webm", body: mp4)
+        var result = await HeraldRichPush.attachMedia(to: videoPush(), budget: 5, session: session)
+        XCTAssertEqual(result.attachments.map(\.identifier), ["herald-image"])
+        StubProtocol.routes[videoURL] = .init(mimeType: "application/octet-stream", body: mp4)
+        result = await HeraldRichPush.attachMedia(to: videoPush(), budget: 5, session: session)
+        XCTAssertEqual(result.attachments.map(\.identifier), ["herald-image"], "no guessing from the .mp4 extension")
+    }
+
+    func testSlowVideoLeavesTimeForThePoster() async {
+        StubProtocol.routes[videoURL] = .init(mimeType: "video/mp4", body: mp4, delay: 3)
+        let start = Date()
+        let result = await HeraldRichPush.attachMedia(to: videoPush(), budget: 1, session: session)
+        XCTAssertEqual(result.attachments.map(\.identifier), ["herald-image"])
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5, "within the budget")
+    }
+
+    func testVideoAndPosterBothFailingStillShowsText() async {
+        StubProtocol.routes[videoURL] = .init(status: 404, mimeType: "text/html")
+        StubProtocol.routes[posterURL] = .init(status: 500, mimeType: "text/html")
+        let result = await HeraldRichPush.attachMedia(to: videoPush(), budget: 5, session: session)
+        XCTAssertTrue(result.attachments.isEmpty)
+        XCTAssertEqual(result.title, "Hi")
+    }
+
+    func testNoVideoAttachesImageAsBefore() async {
+        let result = await HeraldRichPush.attachMedia(to: content(["image_url": posterURL]), budget: 5, session: session)
+        XCTAssertEqual(result.attachments.map(\.identifier), ["herald-image"])
+    }
+
+    func testPrepareUsesTheVideo() async {
+        StubProtocol.routes[videoURL] = .init(mimeType: "video/mp4", body: mp4)
+        let result = await HeraldRichPush.prepare(videoPush(), timeout: 5, session: session)
+        XCTAssertEqual(result.attachments.map(\.identifier), ["herald-video"])
+    }
+
+    func testContentHandlerRunsExactlyOnceEvenWhenTimeExpires() async throws {
+        final class Calls: @unchecked Sendable {
+            let lock = NSLock()
+            var count = 0
+        }
+        let calls = Calls()
+        let service = HeraldNotificationService()
+        let request = UNNotificationRequest(identifier: "r1", content: content([:]), trigger: nil)
+        service.didReceive(request) { _ in calls.lock.withLock { calls.count += 1 } }
+        service.serviceExtensionTimeWillExpire()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        service.serviceExtensionTimeWillExpire()
+        XCTAssertEqual(calls.lock.withLock { calls.count }, 1)
     }
 }
 

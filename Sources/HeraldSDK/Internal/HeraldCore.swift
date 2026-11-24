@@ -518,6 +518,11 @@ actor HeraldCore {
         logInteraction(messageId: message.id, kind: "in_app", action: "dismiss", decisionId: message.decisionId)
     }
 
+    /// `video_play` when a card's or message's video starts, `video_complete` when it reaches the end.
+    func logVideo(messageId: String, kind: String, decisionId: String?, completed: Bool) {
+        logInteraction(messageId: messageId, kind: kind, action: completed ? "video_complete" : "video_play", decisionId: decisionId)
+    }
+
     /// Evaluates a trigger. The winning message joins the pending list and shows as soon as nothing
     /// else is on screen, the minimum interval has passed, the app is active and a presenter exists.
     func fire(_ trigger: TriggerEvent) {

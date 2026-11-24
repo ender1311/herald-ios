@@ -37,7 +37,8 @@ public struct ClassicContentCardView: View {
     }
 }
 
-/// Image on top, then title, body and call to action.
+/// Image on top, then title, body and call to action. A card with a video shows it in place of the
+/// image (see `VideoCardFrame`).
 public struct CaptionedImageContentCardView: View {
     let card: ContentCard
     let onClick: () -> Void
@@ -48,10 +49,14 @@ public struct CaptionedImageContentCardView: View {
     }
 
     public var body: some View {
-        CardFrame(card: card, onClick: onClick) {
-            VStack(alignment: .leading, spacing: 0) {
-                HeraldImage(url: card.imageUrl, aspectRatio: 16 / 9)
-                CardText(card: card)
+        if let video = card.videoUrl {
+            VideoCardFrame(card: card, video: video, onClick: onClick)
+        } else {
+            CardFrame(card: card, onClick: onClick) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HeraldImage(url: card.imageUrl, aspectRatio: 16 / 9)
+                    CardText(card: card)
+                }
             }
         }
     }
@@ -97,6 +102,37 @@ struct CardFrame<Content: View>: View {
         } else {
             framed.accessibilityElement(children: .combine)
         }
+    }
+}
+
+/// `CardFrame` for a captioned card with a video: the player sits outside the card's button, so its play
+/// button and controls get their own taps and VoiceOver focus; the text below is the card's button.
+struct VideoCardFrame: View {
+    let card: ContentCard
+    let video: URL
+    let onClick: () -> Void
+    @Environment(\.heraldTheme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let colors = theme.colors(for: colorScheme)
+        let shape = RoundedRectangle(cornerRadius: theme.cornerRadius, style: .continuous)
+        let text = CardText(card: card).frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 0) {
+            HeraldVideoView(
+                url: video, posterUrl: card.videoPosterUrl ?? card.imageUrl, aspectRatio: 16 / 9, autoplay: card.videoAutoplay,
+                onPlay: { Herald.shared.logVideoPlay(card) }, onComplete: { Herald.shared.logVideoComplete(card) }
+            )
+            if card.url != nil {
+                Button(action: onClick) { text.contentShape(Rectangle()) }.buttonStyle(.plain)
+            } else {
+                text.accessibilityElement(children: .combine)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .background(colors.surface)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(colors.outline, lineWidth: 1))
     }
 }
 
